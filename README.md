@@ -2,6 +2,8 @@
 
 `sre-incident-copilot` is a governed, read-only SRE incident assistant. It helps on-call engineers triage alerts, reason about SLO and error-budget impact, retrieve runbooks, suggest safe diagnostic commands, draft Slack-style updates, and write audit logs.
 
+The project is motivated by a common SRE failure mode: real incidents getting buried under noisy pages. In Splunk's [State of Observability 2025](https://www.splunk.com/en-us/blog/observability/state-of-observability-2025.html), based on a survey of 1,855 ITOps and engineering professionals, 73% of respondents reported outages due to ignored or suppressed alerts. On-call engineers usually are not ignoring alerts because they are careless; they are desensitized because their attention has been stretched past its limit by low-value pages. The result is that the one alert that actually matters can get lost in the pile.
+
 It is not an autonomous remediation bot. It never restarts pods, scales services, rolls back deployments, deletes data, applies Terraform, or permanently silences alerts. When an alert or runbook suggests an irreversible action, the copilot blocks it and returns `requires_human_approval: true`.
 
 ## SRE Workflow
