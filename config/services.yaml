@@ -1,0 +1,16 @@
+services:
+  checkout-api:
+    owner: checkout-sre
+    tier: customer-facing
+    availability_slo: 99.9
+    escalation_burn_rate: 2.0
+  payment-api:
+    owner: payments-sre
+    tier: critical
+    availability_slo: 99.95
+    escalation_burn_rate: 2.0
+  inventory-api:
+    owner: inventory-sre
+    tier: internal-critical
+    availability_slo: 99.5
+    escalation_burn_rate: 3.0

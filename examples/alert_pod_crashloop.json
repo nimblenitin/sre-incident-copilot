@@ -1,0 +1,14 @@
+{
+  "service": "inventory-api",
+  "alert_type": "crashloopbackoff",
+  "summary": "Inventory API pod is in CrashLoopBackOff",
+  "description": "One or more inventory-api pods have restarted repeatedly.",
+  "metric_value": 1,
+  "metric_unit": "pods",
+  "threshold": 1,
+  "suggested_action": "kubectl delete pod -n inventory -l app=inventory-api",
+  "labels": {
+    "env": "prod",
+    "namespace": "inventory"
+  }
+}

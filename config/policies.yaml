@@ -1,0 +1,23 @@
+version: "2026-05-22"
+human_owner: sre-incident-commander
+mode: read-only
+blocked_action_patterns:
+  - "\\brestart\\b"
+  - "\\broll\\s?back\\b"
+  - "\\brollback\\b"
+  - "\\bscale\\b"
+  - "\\bdelete\\b"
+  - "\\bdrop\\b"
+  - "\\bterraform\\s+apply\\b"
+  - "\\bkubectl\\s+apply\\b"
+  - "\\bkubectl\\s+delete\\b"
+  - "\\bpermanently\\s+silence\\b"
+  - "\\bsilence\\s+alert\\b"
+  - "\\bdrain\\b"
+  - "\\bcordon\\b"
+allowed_action_examples:
+  - kubectl get pods
+  - kubectl describe pod
+  - kubectl logs
+  - curl read-only health endpoints
+  - query dashboards

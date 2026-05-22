@@ -1,0 +1,26 @@
+default: sev3
+rules:
+  - alert_type: error_rate
+    services: [payment-api, checkout-api]
+    metric_min: 2.0
+    burn_rate_min: 2.0
+    severity: sev1
+    reason: "Customer-facing elevated 5xx rate is burning error budget quickly."
+  - alert_type: high_latency
+    services: [checkout-api]
+    metric_min: 1200
+    burn_rate_min: 1.5
+    severity: sev2
+    reason: "Checkout latency is materially above threshold and may affect conversion."
+  - alert_type: crashloop
+    services: [inventory-api]
+    metric_min: 1
+    burn_rate_min: 0
+    severity: sev2
+    reason: "CrashLoopBackOff indicates service capacity or dependency instability."
+  - alert_type: pod
+    services: [inventory-api]
+    metric_min: 1
+    burn_rate_min: 0
+    severity: sev2
+    reason: "Pod instability requires owner review and read-only diagnosis."

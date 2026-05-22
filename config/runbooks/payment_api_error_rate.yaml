@@ -1,0 +1,13 @@
+id: payment-api-error-rate
+service: payment-api
+title: Payment API elevated 5xx rate
+alert_types: [error_rate, 5xx]
+severity_hint: sev1
+probable_causes:
+  - Payment processor dependency errors or recent deployment regression.
+diagnostic_commands:
+  - kubectl get pods -n payments -l app=payment-api
+  - kubectl logs -n payments deploy/payment-api --since=15m | grep ERROR
+  - curl -s https://payment-api.example.com/health
+  - rollback deployment payment-api
+  - scale deployment payment-api --replicas=10

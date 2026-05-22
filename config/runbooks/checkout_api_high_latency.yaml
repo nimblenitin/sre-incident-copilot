@@ -1,0 +1,13 @@
+id: checkout-api-high-latency
+service: checkout-api
+title: Checkout API high latency
+alert_types: [high_latency, latency]
+severity_hint: sev2
+probable_causes:
+  - Upstream dependency latency or thread/connection pool saturation.
+diagnostic_commands:
+  - kubectl get pods -n checkout -l app=checkout-api
+  - kubectl top pods -n checkout -l app=checkout-api
+  - kubectl logs -n checkout deploy/checkout-api --since=15m
+  - curl -s https://checkout-api.example.com/health
+  - restart deployment checkout-api

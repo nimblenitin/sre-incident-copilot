@@ -1,0 +1,13 @@
+id: kubernetes-pod-crashloop
+service: inventory-api
+title: Kubernetes pod CrashLoopBackOff
+alert_types: [crashloop, pod, crashloopbackoff]
+severity_hint: sev2
+probable_causes:
+  - Container startup failure, missing configuration, or dependency timeout.
+diagnostic_commands:
+  - kubectl get pods -n inventory -l app=inventory-api
+  - kubectl describe pods -n inventory -l app=inventory-api
+  - kubectl logs -n inventory -l app=inventory-api --previous
+  - kubectl get events -n inventory --sort-by=.lastTimestamp
+  - kubectl delete pod -n inventory -l app=inventory-api

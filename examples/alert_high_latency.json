@@ -1,0 +1,14 @@
+{
+  "service": "checkout-api",
+  "alert_type": "high_latency",
+  "summary": "p95 latency above threshold for checkout-api",
+  "description": "p95 latency has exceeded 1200ms for 10 minutes.",
+  "metric_value": 1500,
+  "metric_unit": "ms",
+  "threshold": 1200,
+  "suggested_action": "restart deployment checkout-api",
+  "labels": {
+    "env": "prod",
+    "region": "us-east-1"
+  }
+}

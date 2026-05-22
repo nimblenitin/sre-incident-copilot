@@ -1,0 +1,14 @@
+{
+  "service": "payment-api",
+  "alert_type": "error_rate",
+  "summary": "5xx rate elevated on payment-api",
+  "description": "HTTP 5xx responses are above 2% for the payment API.",
+  "metric_value": 3.5,
+  "metric_unit": "percent",
+  "threshold": 2.0,
+  "suggested_action": "rollback deployment payment-api",
+  "labels": {
+    "env": "prod",
+    "region": "us-east-1"
+  }
+}
