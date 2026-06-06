@@ -33,7 +33,7 @@ flowchart TB
     style prom fill:#e65100,color:#ffffff,stroke:#bf360c,stroke-width:2px
     style am fill:#c62828,color:#ffffff,stroke:#b71c1c,stroke-width:2px
     style slack fill:#1565c0,color:#ffffff,stroke:#0d47a1,stroke-width:2px
-    style ui fill:#6a1b9a,color:#ffffff,stroke:#4a148c,stroke-width:2px
+    style ui fill:#00838f,color:#ffffff,stroke:#006064,stroke-width:2px
 
     linkStyle default stroke-width:4px,stroke:#1a237e
 ```
