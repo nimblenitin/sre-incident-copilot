@@ -187,15 +187,13 @@ This is flagged as irreversible because a misconfigured manifest - for example, 
 
 **Scenario:** A recurring pod crash loop on `inference-api` has been traced to a known Kubernetes bug. The fix is a version upgrade - but upgrading carries its own risk. The agent suggests steps, but more importantly with tradeoff to defer the risk to a human successfully.
 
----
-
 **Agent output:**
 
 **Incident: `inference-api` crash loop - CrashBackOffLoop - 13:45 UTC**
 
-Root cause identified: pods are hitting a memory accounting bug in Kubernetes 1.26.3. It's a known issue - fixed in 1.27.x. We're seeing it trigger specifically under the memory pressure patterns from our batch inference jobs.
+Pods hitting a memory accounting bug in Kubernetes 1.26.3 is a known issue - fixed in 1.27.x. We're seeing it trigger specifically under the memory pressure patterns from our batch inference jobs.
 
-One path forward. It's not clean either way:
+Action options with tradeoffs:
 
 **Upgrade to 1.27.x** - patches the bug directly. But 1.27.x ships with a change to the kubelet eviction manager that behaves differently under high pod density. We're running 180+ pods per node on several clusters. That's above the threshold where the new eviction behavior has caused instability in reported cases. We may fix this crash loop and introduce a different one.
 
