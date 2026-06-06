@@ -1,0 +1,22 @@
+route:
+  receiver: slack-sre
+  group_by: [alertname, service]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 5m
+
+receivers:
+  - name: slack-sre
+    slack_configs:
+      - api_url: 'http://localhost:5000/slack-mock'
+        channel: "#sre-alerts"
+        title: '⚠️ {{ .GroupLabels.alertname }} - {{ .GroupLabels.service }}'
+        text: >-
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          *Service:* {{ .GroupLabels.service }}
+          *Runbook:* {{ .Annotations.runbook }}
+        actions:
+          - type: button
+            text: "🔧 Troubleshoot with AI"
+            url: 'http://localhost:8501?alert_id={{ .GroupLabels.alertname }}-{{ .GroupLabels.service }}&service={{ .GroupLabels.service }}&metric=p99_latency&severity={{ .Labels.severity }}'

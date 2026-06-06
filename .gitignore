@@ -1,7 +1,5 @@
-.DS_Store
-.venv/
+runbook_index/
+audit_logs/
 __pycache__/
-.pytest_cache/
 *.pyc
-logs/*.jsonl
-!logs/.gitkeep
+.DS_Store

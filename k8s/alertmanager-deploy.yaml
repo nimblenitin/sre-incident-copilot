@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+data:
+  alertmanager.yml: |
+    route:
+      receiver: slack-sre
+      group_by: [alertname, service]
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 5m
+    receivers:
+      - name: slack-sre
+        slack_configs:
+          - api_url: 'http://slack-mock:5000/slack-webhook'
+            send_resolved: true
+            channel: "#sre-alerts"
+            title: '⚠️ {{ .GroupLabels.alertname }} - {{ .GroupLabels.service }}'
+            text: >-
+              *Description:* {{ .Annotations.description }}
+              *Severity:* {{ .Labels.severity }}
+              *Service:* {{ .GroupLabels.service }}
+              *Runbook:* {{ .Annotations.runbook }}
+            actions:
+              - type: button
+                text: "🔧 Troubleshoot with AI"
+                url: 'http://localhost:8501?alert_id={{ .GroupLabels.alertname }}-{{ .GroupLabels.service }}&service={{ .GroupLabels.service }}&metric=p99_latency&severity={{ .Labels.severity }}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  labels:
+    app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:latest
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+          ports:
+            - containerPort: 9093
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  labels:
+    app: alertmanager
+spec:
+  selector:
+    app: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: 9093
+      nodePort: 30091
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-mock
+  labels:
+    app: slack-mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slack-mock
+  template:
+    metadata:
+      labels:
+        app: slack-mock
+    spec:
+      containers:
+        - name: slack-mock
+          image: python:3.11-slim
+          command:
+            - python
+            - -u
+            - -c
+            - |
+              import sys, json
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              class Handler(BaseHTTPRequestHandler):
+                  def do_POST(self):
+                      length = int(self.headers.get('Content-Length', 0))
+                      body = self.rfile.read(length)
+                      sys.stdout.write("=== SLACK WEBHOOK RECEIVED ===\n")
+                      sys.stdout.write(json.dumps(json.loads(body), indent=2) + "\n")
+                      sys.stdout.write("================================\n")
+                      sys.stdout.flush()
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'ok')
+                  def log_message(self, format, *args):
+                      pass
+              HTTPServer(('0.0.0.0', 5000), Handler).serve_forever()
+          ports:
+            - containerPort: 5000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slack-mock
+  labels:
+    app: slack-mock
+spec:
+  selector:
+    app: slack-mock
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000

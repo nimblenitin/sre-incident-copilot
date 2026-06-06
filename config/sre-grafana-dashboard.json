@@ -1,0 +1,232 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus data source",
+      "type": "datasource",
+      "pluginId": "prometheus"
+    }
+  ],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0"},
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "5.0.0"},
+    {"type": "panel", "id": "stat", "name": "Stat", "version": ""},
+    {"type": "panel", "id": "bargauge", "name": "Bar gauge", "version": ""},
+    {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
+    {"type": "panel", "id": "piechart", "name": "Pie chart", "version": ""}
+  ],
+  "title": "SRE Co-Pilot — Agent Effectiveness",
+  "tags": ["sre", "incident-response"],
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Incidents",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 3, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sre_sessions_total",
+          "legendFormat": "sessions",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]},
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Avg MTTR (last 7 days)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 3, "x": 3, "y": 0},
+      "targets": [
+        {
+          "expr": "avg(sre_mttr_seconds)",
+          "legendFormat": "avg MTTR",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 600},
+              {"color": "red", "value": 1800}
+            ]
+          },
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Open Tickets (Backlog)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 3, "x": 6, "y": 0},
+      "targets": [
+        {
+          "expr": "sre_tickets_open",
+          "legendFormat": "open",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 5},
+              {"color": "red", "value": 15}
+            ]
+          },
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Helpful vs Unhelpful",
+      "type": "piechart",
+      "gridPos": {"h": 4, "w": 3, "x": 9, "y": 0},
+      "targets": [
+        {
+          "expr": "sre_feedback_total{helped=~\"helped_true|helped_false\"}",
+          "legendFormat": "{{helped}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        }
+      },
+      "options": {
+        "pieType": "pie",
+        "displayLabels": ["percent", "name"],
+        "reduceOptions": {"calcs": ["sum"]}
+      }
+    },
+    {
+      "id": 5,
+      "title": "Reopen Count by Metric",
+      "type": "bargauge",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 4},
+      "targets": [
+        {
+          "expr": "sre_reopen_count",
+          "legendFormat": "{{metric}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 3},
+              {"color": "red", "value": 6}
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 6,
+      "title": "Ticket Backlog over Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 4},
+      "targets": [
+        {
+          "expr": "sre_tickets_open",
+          "legendFormat": "open tickets",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"mode": "thresholds"},
+          "custom": {
+            "showPoints": "always",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 20
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 5},
+              {"color": "red", "value": 15}
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "hidden"},
+        "tooltip": {"mode": "single"}
+      }
+    },
+    {
+      "id": 7,
+      "title": "MTTR per Incident",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [
+        {
+          "expr": "sre_mttr_seconds",
+          "legendFormat": "{{metric}} ({{session_id}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "showPoints": "always",
+            "lineInterpolation": "stepAfter"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 900},
+              {"color": "red", "value": 3600}
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "right"},
+        "tooltip": {"mode": "multi"}
+      }
+    }
+  ],
+  "schemaVersion": 36,
+  "version": 2
+}

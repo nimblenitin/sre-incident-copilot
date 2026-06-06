@@ -1,0 +1,46 @@
+groups:
+  - name: inference-api
+    rules:
+      - alert: InferenceHighLatency
+        expr: histogram_quantile(0.99, rate(inference_latency_seconds_bucket[2m])) > 1.5
+        for: 1m
+        labels:
+          severity: critical
+          service: inference-api
+        annotations:
+          summary: "Inference API p99 latency > 1.5s"
+          description: "p99 inference latency is {{ $value }}s for inference-api"
+          runbook: "high-latency"
+
+      - alert: InferenceErrorRateHigh
+        expr: rate(inference_errors_total[5m]) / rate(inference_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+          service: inference-api
+        annotations:
+          summary: "Inference API error rate > 5%"
+          description: "Error rate is {{ $value | humanizePercentage }} for inference-api"
+          runbook: "inference-api-errors"
+
+      - alert: InferenceNoTraffic
+        expr: rate(inference_requests_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: inference-api
+        annotations:
+          summary: "Inference API receiving no traffic"
+          description: "No requests to inference-api in 5 minutes"
+          runbook: "service-down"
+
+      - alert: InferenceHighInFlight
+        expr: inference_requests_in_flight > 10
+        for: 1m
+        labels:
+          severity: warning
+          service: inference-api
+        annotations:
+          summary: "Inference API high in-flight requests"
+          description: "In-flight requests: {{ $value }}"
+          runbook: "high-latency"
