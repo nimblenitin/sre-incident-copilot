@@ -33,6 +33,8 @@ flowchart TB
     style am fill:#c62828,color:#ffffff,stroke:#b71c1c
     style slack fill:#1565c0,color:#ffffff,stroke:#0d47a1
     style ui fill:#6a1b9a,color:#ffffff,stroke:#4a148c
+
+    linkStyle default stroke-width:3px,stroke:#37474f
 ```
 
 ## Quick Start
