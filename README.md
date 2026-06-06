@@ -7,7 +7,7 @@ Inspired by [The Seven Habits of Effective Agentic Systems](https://agent-habits
 ## Architecture
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'background': '#eef2f7', 'primaryBorderColor': '#37474f', 'lineColor': '#2c3e50', 'tertiaryColor': '#eef2f7'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'background': '#e0f7fa', 'primaryBorderColor': '#37474f', 'lineColor': '#2c3e50', 'tertiaryColor': '#e0f7fa'}}}%%
 flowchart TB
     subgraph k8s[K8s Cluster]
         api[eg. Inference API<br/>/v1/chat /metrics]
