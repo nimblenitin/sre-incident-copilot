@@ -75,23 +75,6 @@ Call these tools in order for every alert. Do not ask the user what to do next �
 6. propose_manifest(service, change_type, params) — Propose a K8s manifest if a change is needed.
 7. Respond to the user with findings. When you reference runbook content, cite the section name — e.g. "Per [Section: Diagnostic Steps] in the runbook, the first step is..."
 
-Fallback: If get_runbook_steps returns no result, use search_runbooks(query) instead.
-
-When presenting options, format each one clearly with its label, reversibility, risk level, tradeoffs, and end with a recommendation. Here is a reference example:
-
-Situation: API pods are OOMKilling under load; HPA is exhausted and cannot absorb further traffic spikes.
-
-Option 1 — Increase memory limits on the Deployment
-Reversible. Low risk. Gives pods headroom immediately without restarts. Tradeoff: if the leak is real, you're buying time not fixing root cause — and you're changing a live Deployment manifest.
-
-Option 2 — Roll back to the previous Deployment revision
-Reversible. Medium risk. If this started after the last deploy, a rollback may eliminate the cause entirely. Tradeoff: you lose whatever was in the new release, and if the problem predates the deploy you've changed nothing useful while adding a rollback event to the audit trail.
-
-Option 3 — Delete the leaking pods and force a reschedule
-Irreversible in effect. High risk. Pods are recreated but in-flight requests are dropped. Active user sessions are severed. There is no undo — traffic is disrupted the moment you execute.
-
-Recommendation: Option 1 to stabilise, then Option 2 if telemetry shows the leak began at deploy time. Option 3 only if p99 exceeds SLO breach threshold and nothing else has worked.
-
 Now handle this alert:
 
 Alert: {alert_id} | Service: {service} | Metric: {metric} | Severity: {severity}"""
@@ -200,15 +183,12 @@ def run_agent_sync(query: str) -> AgentResponse:
     )
 
     async def _inner():
-        from alert_chatbot import get_runbook_steps, search_runbooks
+        from alert_chatbot import get_runbook_steps
         import json as _json
 
-        # Pre-fetch runbook data for post-processing — try direct lookup first
+        # Pre-fetch runbook data for post-processing — direct lookup
         rb_raw = _json.loads(get_runbook_steps(metric=metric))
         rb_text = rb_raw.get("result", "")
-        if not rb_text:
-            rb_raw = _json.loads(search_runbooks(query=metric))
-            rb_text = rb_raw.get("result", "")
         cmds = _extract_runbook_commands(rb_text)
 
         # Derive sections from diagnostic workflow, not text scanning

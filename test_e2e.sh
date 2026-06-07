@@ -18,29 +18,20 @@ kill $(lsof -ti:9094) 2>/dev/null || true
 kill $(lsof -ti:8081) 2>/dev/null || true
 kill $(lsof -ti:5000) 2>/dev/null || true
 
-# ── Step 2: Create runbook index ──
+# ── Step 2: Create Kind cluster ──
 echo ""
-echo "=== Step 2: Create runbook RAG index ==="
-if [ ! -d "runbook_index" ]; then
-    python create_runbook_index.py
-else
-    echo "Runbook index already exists, skipping."
-fi
-
-# ── Step 3: Create Kind cluster ──
-echo ""
-echo "=== Step 3: Create Kind cluster ==="
+echo "=== Step 2: Create Kind cluster ==="
 kind create cluster --name alert-chatbot --config k8s/kind-config.yaml
 
-# ── Step 4: Build and load inference API image ──
+# ── Step 3: Build and load inference API image ──
 echo ""
-echo "=== Step 4: Build inference API Docker image ==="
+echo "=== Step 3: Build inference API Docker image ==="
 docker build -t inference-api:latest inference-api/
 kind load docker-image inference-api:latest --name alert-chatbot
 
-# ── Step 5: Deploy all K8s resources ──
+# ── Step 4: Deploy all K8s resources ──
 echo ""
-echo "=== Step 5: Deploy to Kubernetes ==="
+echo "=== Step 4: Deploy to Kubernetes ==="
 kubectl --context kind-alert-chatbot apply -f k8s/inference-api-deploy.yaml -f k8s/prometheus-deploy.yaml -f k8s/alertmanager-deploy.yaml
 
 echo "Waiting for pods to be ready..."
@@ -52,9 +43,9 @@ kubectl --context kind-alert-chatbot wait --for=condition=ready pod -l app=slack
 echo "All pods are ready."
 kubectl --context kind-alert-chatbot get pods
 
-# ── Step 6: Port forward inference API ──
+# ── Step 5: Port forward inference API ──
 echo ""
-echo "=== Step 6: Port forward services ==="
+echo "=== Step 5: Port forward services ==="
 kubectl --context kind-alert-chatbot port-forward svc/inference-api 8081:8000 &
 echo $! > /tmp/pf_inference.pid
 kubectl --context kind-alert-chatbot port-forward svc/prometheus 9091:9090 &
@@ -79,17 +70,17 @@ echo "Checking slack-mock..."
 curl -sf -X POST http://localhost:5000/slack-webhook -d '{"test":true}' || { echo "slack-mock not ready"; exit 1; }
 echo "OK"
 
-# ── Step 7: Start Streamlit chatbot ──
+# ── Step 6: Start Streamlit chatbot ──
 echo ""
-echo "=== Step 7: Start Streamlit chatbot ==="
+echo "=== Step 6: Start Streamlit chatbot ==="
 streamlit run alert_app.py --server.port 8501 --server.headless true &
 echo $! > /tmp/streamlit.pid
 sleep 5
 echo "Streamlit chatbot started on http://localhost:8501"
 
-# ── Step 8: Trigger latency spike ──
+# ── Step 7: Trigger latency spike ──
 echo ""
-echo "=== Step 8: Inject latency spike into inference API ==="
+echo "=== Step 7: Inject latency spike into inference API ==="
 curl -s -X POST http://localhost:8081/debug/set-latency -d '{"latency_ms": 3000}'
 echo ""
 echo "Latency set to 3000ms. Generating traffic..."
@@ -103,9 +94,9 @@ wait
 echo "Traffic generated. Waiting for Prometheus to evaluate alerts..."
 sleep 30
 
-# ── Step 9: Check Prometheus alerts ──
+# ── Step 8: Check Prometheus alerts ──
 echo ""
-echo "=== Step 9: Check firing alerts in Prometheus ==="
+echo "=== Step 8: Check firing alerts in Prometheus ==="
 FIRING=$(curl -s http://localhost:9091/api/v1/alerts | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -132,9 +123,9 @@ else
     echo "   Run the traffic loop again or check http://localhost:9091/alerts"
 fi
 
-# ── Step 10: Simulate Slack alert ──
+# ── Step 9: Simulate Slack alert ──
 echo ""
-echo "=== Step 10: Simulate Slack alert (with chatbot link) ==="
+echo "=== Step 9: Simulate Slack alert (with chatbot link) ==="
 cd "$SCRIPT_DIR"
 python simulate_alert.py "http://localhost:5000/slack-webhook" "http://localhost:8501"
 
@@ -156,7 +147,7 @@ echo ""
 echo "To clean up: kind delete cluster --name alert-chatbot"
 echo "======================================="
 
-# ── Step 11: Wait for user to test ──
+# ── Step 10: Wait for user to test ──
 echo ""
 echo "Open http://localhost:8501?alert_id=InferenceHighLatency-inference-api&service=inference-api&metric=p99_latency&severity=critical"
 echo "in your browser and ask: 'Why is inference-api slow?'"

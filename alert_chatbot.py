@@ -1,15 +1,13 @@
 import os
 import time
 import functools
-from llama_index.core import Settings, VectorStoreIndex
+from llama_index.core import Settings
 from llama_index.core.tools import FunctionTool
 from llama_index.core.agent.workflow import ReActAgent
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.core.base.llms.types import (
     ChatMessage, ChatResponse, TextBlock, ThinkingBlock, ToolCallBlock, MessageRole,
 )
-from llama_index.vector_stores.chroma import ChromaVectorStore
 
 
 class _QwenOllama(Ollama):
@@ -45,12 +43,8 @@ def _merge_thinking(response: ChatResponse) -> ChatResponse:
     blocks.insert(0, TextBlock(text=content))
     response.message.blocks = blocks
     return response
-from chromadb import PersistentClient
 
 from pydantic import BaseModel
-
-INDEX_DIR = "./runbook_index"
-COLLECTION_NAME = "sre_runbooks"
 
 RUNBOOK_MAP = {
     "p99_latency": "data/runbooks/high-latency.md",
@@ -382,27 +376,8 @@ def _keyword_check(text: str) -> tuple[bool, str]:
     return False, ""
 
 
-def search_runbooks(query: str = "") -> str:
-    """CALL SECOND. Semantic search across all runbook content. Use for open-ended questions. Returns JSON with result, irreversible, reason."""
-    import json as _json
-    query = _extract(query, query)
-    if not query:
-        return _json.dumps({"result": "No search query provided.", "irreversible": False, "reason": ""})
-    index = _load_index()
-    retriever = index.as_retriever(similarity_top_k=3)
-    nodes = retriever.retrieve(query)
-    if not nodes:
-        return _json.dumps({"result": "No matching runbook steps found.", "irreversible": False, "reason": ""})
-    results = []
-    for i, node in enumerate(nodes, 1):
-        results.append(f"--- Result {i} (score: {node.score:.3f}) ---\n{node.text}")
-    combined = "\n\n".join(results)
-    irreversible, reason = _keyword_check(combined)
-    return _json.dumps({"result": combined, "irreversible": irreversible, "reason": reason})
-
-
 def get_runbook_steps(metric: str = "") -> str:
-    """CALL FIRST. Direct lookup of runbook steps by alert metric name. Faster and more reliable than semantic search. Returns JSON with result, irreversible, reason."""
+    """Direct lookup of runbook steps by alert metric name. Returns JSON with result, irreversible, reason."""
     import json as _json
     metric = _extract(metric, metric)
     if not metric:
@@ -428,7 +403,7 @@ def get_next_step(metric: str = "", completed_steps: str = "") -> str:
     completed_raw = _extract(completed_steps, completed_steps)
     workflow = DIAGNOSTIC_WORKFLOWS.get(metric, [])
     if not workflow:
-        return _json.dumps({"next_step": "search_runbooks", "reason": "No workflow defined; fall back to semantic search."})
+        return _json.dumps({"next_step": "assess_options", "reason": "No workflow defined; proceed to assessment."})
     completed = [s.strip() for s in completed_raw.split(",") if s.strip()]
     for step in workflow:
         if step not in completed:
@@ -437,7 +412,7 @@ def get_next_step(metric: str = "", completed_steps: str = "") -> str:
 
 
 def suggest_diagnostic_command(service: str = "", symptom: str = "") -> str:
-    """CALL SECOND after search_runbooks. Get a specific diagnostic shell command for a given service and symptom keyword (latency, error, health, resources, pool). Returns JSON with command, irreversible, reason."""
+    """Get a specific diagnostic shell command for a given service and symptom keyword (latency, error, health, resources, pool). Returns JSON with command, irreversible, reason."""
     import json as _json
     service = _extract(service, service)
     symptom = _extract(symptom, symptom)
@@ -631,24 +606,6 @@ def assess_options(service: str = "", situation: str = "") -> str:
     }, indent=2)
 
 
-_index_cache = None
-
-
-def _load_index():
-    global _index_cache
-    if _index_cache is not None:
-        return _index_cache
-    chroma_client = PersistentClient(path=INDEX_DIR)
-    chroma_collection = chroma_client.get_collection(COLLECTION_NAME)
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en")
-    _index_cache = VectorStoreIndex.from_vector_store(
-        vector_store=vector_store,
-        embed_model=embed_model,
-    )
-    return _index_cache
-
-
 Settings.llm = Ollama(
     model="llama3.1:8b",
     request_timeout=360.0,
@@ -660,7 +617,6 @@ Settings.llm = Ollama(
 TOOL_OWNERS = {
     "get_runbook_steps": "SRE Runbook Team",
     "get_next_step": "SRE Runbook Team",
-    "search_runbooks": "SRE Runbook Team",
     "suggest_diagnostic_command": "SRE Engineering",
     "assess_options": "SRE Engineering",
     "propose_manifest": "Platform Team",
@@ -681,9 +637,6 @@ def _derive_reason_code(tool_name: str, args: dict) -> str:
         if not cs:
             return "query_first_diagnostic_step"
         return "query_next_diagnostic_step"
-    if tool_name == "search_runbooks":
-        q = args.get("query", "")
-        return f"semantic_search_{q[:40]}" if q else "semantic_search"
     if tool_name == "suggest_diagnostic_command":
         sym = args.get("symptom", "")
         return f"diagnostic_command_for_{sym}" if sym else "diagnostic_command"
@@ -747,7 +700,6 @@ def make_agent(telemetry_session=None, system_prompt=None):
     """
     fn_direct = _make_normalized_tool(get_runbook_steps, ["metric"])
     fn_next = _make_normalized_tool(get_next_step, ["metric", "completed_steps"])
-    fn_runbook = _make_normalized_tool(search_runbooks, ["query"])
     fn_cmd = _make_normalized_tool(
         suggest_diagnostic_command, ["service", "symptom"]
     )
@@ -765,9 +717,6 @@ def make_agent(telemetry_session=None, system_prompt=None):
         fn_next = wrap_tool_with_telemetry(
             fn_next, "get_next_step", telemetry_session
         )
-        fn_runbook = wrap_tool_with_telemetry(
-            fn_runbook, "search_runbooks", telemetry_session
-        )
         fn_cmd = wrap_tool_with_telemetry(
             fn_cmd, "suggest_diagnostic_command", telemetry_session
         )
@@ -780,7 +729,6 @@ def make_agent(telemetry_session=None, system_prompt=None):
 
     direct_tool = FunctionTool.from_defaults(fn=fn_direct)
     next_tool = FunctionTool.from_defaults(fn=fn_next)
-    runbook_tool = FunctionTool.from_defaults(fn=fn_runbook)
     command_tool = FunctionTool.from_defaults(fn=fn_cmd)
     manifest_tool = FunctionTool.from_defaults(fn=fn_manifest)
     options_tool = FunctionTool.from_defaults(fn=fn_options)
@@ -790,7 +738,7 @@ def make_agent(telemetry_session=None, system_prompt=None):
         kwargs["system_prompt"] = system_prompt
 
     return ReActAgent(
-        tools=[direct_tool, next_tool, runbook_tool, command_tool, manifest_tool, options_tool],
+        tools=[direct_tool, next_tool, command_tool, manifest_tool, options_tool],
         llm=Settings.llm,
         verbose=True,
         **kwargs,

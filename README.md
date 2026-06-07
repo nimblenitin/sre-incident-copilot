@@ -24,8 +24,6 @@ flowchart TB
         agent --> direct[get_runbook_steps<br/>direct file lookup by metric]
         direct --> sm[get_next_step<br/>state machine: which step next?]
         sm --> agent
-        agent -- fallback --> search[search_runbooks<br/>semantic ChromaDB search]
-        search --> agent
         agent --> user
     end
 
@@ -44,17 +42,12 @@ flowchart TB
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. (Optional) Build the runbook RAG index — only needed for semantic search fallback
-python create_runbook_index.py
-
-# 3. Start the chatbot
+# 2. Start the chatbot
 streamlit run alert_app.py --server.port 8501
 
-# 4. Open in browser
+# 3. Open in browser
 open http://localhost:8501/?alert_id=demo-001&service=inference-api&metric=p99_latency&severity=critical
 ```
-
-The primary retrieval uses direct file lookup by metric name (`get_runbook_steps`). The RAG index is only required for the `search_runbooks` fallback used on open-ended follow-up questions.
 
 ### Full E2E with Prometheus + Slack
 
@@ -83,17 +76,15 @@ python simulate_alert.py
 
 ```
 alert-chatbot/
-├── alert_chatbot.py           # ReActAgent + 6 read-only FunctionTools
+├── alert_chatbot.py           # ReActAgent + 5 read-only FunctionTools
 ├── alert_app.py               # Streamlit UI with alert context pre-loading
 ├── telemetry.py               # Structured JSON audit logger
-├── create_runbook_index.py    # IngestionPipeline: Document → Node → VectorStoreIndex
 ├── simulate_alert.py          # Send a mock Slack alert with chatbot link
 ├── slack_webhook_server.py    # Local Slack webhook mock for testing
 ├── test_e2e.sh                # Automated end-to-end test script
 ├── requirements.txt
 ├── Makefile
 ├── data/runbooks/*.md         # 6 sample runbook documents
-├── runbook_index/             # Persisted ChromaDB (generated)
 ├── inference-api/
 │   ├── app.py                 # FastAPI with Prometheus metrics + debug endpoints
 │   └── Dockerfile
@@ -114,7 +105,7 @@ alert-chatbot/
 |---|---|
 | Agent framework | `llama-index-core` with `ReActAgent` |
 | LLM | Ollama (`llama3.1`) |
-| Vector store | ChromaDB with `BAAI/bge-small-en` embeddings |
+| Runbook retrieval | Direct file lookup by metric name |
 | Web UI | Streamlit |
 | Inference API | FastAPI + `prometheus_client` |
 | Kubernetes | Kind (local cluster) |
@@ -127,9 +118,9 @@ alert-chatbot/
 
 ### Habit 1 - Clearly Bounded Role
 
-This agent is bounded: it translates alert context and runbook knowledge into diagnostic suggestions and proposed manifest changes for an engineer to review. It never directly mutates state.
+This agent is bounded: it translates alert context and runbook knowledge into diagnostic suggestions and proposes manifest changes for an engineer to review. It never directly mutates state.
 
-Six tools: `get_runbook_steps` (direct file lookup by metric name), `get_next_step` (state machine for diagnostic ordering), `search_runbooks` (semantic RAG fallback for open-ended questions), `suggest_diagnostic_command` (returns text, never runs it), `assess_options` (structured tradeoff analysis), and `propose_manifest` (generates K8s YAML written to disk only after engineer approval, never applied directly). Alert context arrives embedded in the system prompt, no API calls, no extra permissions. No tool mutates live state: no `restart_service`, no `failover_db`, no `clear_cache`.
+Five tools: `get_runbook_steps` (direct file lookup by metric name), `get_next_step` (state machine for diagnostic ordering), `suggest_diagnostic_command` (returns text, never runs it), `assess_options` (structured tradeoff analysis), and `propose_manifest` (generates K8s YAML written to disk only after engineer approval, never applied directly). Alert context arrives embedded in the system prompt, no API calls, no extra permissions. No tool mutates live state: no `restart_service`, no `failover_db`, no `clear_cache`.
 
 
 ### Habit 2 - Embedded in Workflows
@@ -151,9 +142,8 @@ Constraints are not guardrails added after the fact, they are part of the agent'
 | No direct mutation | `FunctionTool` wraps only Python functions that return text, no tool exists for restart, failover, or any state change |
 | No shell execution | `suggest_diagnostic_command` returns a string, the system never calls `os.system()` or `subprocess` |
 | Alert context from URL params | Alert data is parsed from the URL query string, no API calls, no network permissions needed |
-| `max_iterations=8` | `MAX_ITERATIONS=8` covers the full 6-tool chain with two buffer cycles, consistent with Habit 3's explicit constraints |
-| `similarity_top_k=3` | similarity_top_k=3 returns the 3 most relevant runbook chunks without flooding the context window |
-| Hallucinated tool rejection | The system prompt states that only 6 tools exist, and the `_extract()` guard discards malformed or nonexistent tool calls, enforced in code, not just prose |
+| `max_iterations=8` | `MAX_ITERATIONS=8` covers the full 5-tool chain with three buffer cycles, consistent with Habit 3's explicit constraints |
+| Hallucinated tool rejection | The system prompt states that only 5 tools exist, and the `_extract()` guard discards malformed or nonexistent tool calls, enforced in code, not just prose |
 | Irreversible action flagging | `_assess_irreversibility()` deterministically scans the agent's output for keywords (`scale`, `restart`, `delete`, `failover`, etc.) and sets `has_irreversible_suggestion` - enforced by code, not left to the LLM |
 | Manifest proposals are gated | `propose_manifest` returns YAML text; the manifest is written to a file only after UI approval, never by the agent. The updated manifest is never deployed by the agent. |
 
@@ -175,7 +165,7 @@ class AgentResponse(BaseModel):
     manifest_yaml: str                 # extracted YAML if agent proposes a manifest
 ```
 
-**Confidence** is set based on whether runbook data was available (from `get_runbook_steps` or `search_runbooks`), not from model output:
+**Confidence** is set based on whether runbook data was available (from `get_runbook_steps`), not from model output:
 - `0.8` if runbook data was available (any results returned)
 - `0.3` if no runbook data was found
 
@@ -226,13 +216,14 @@ Maturity in an agentic system doesn't mean more autonomy — it means more predi
 
 | Principle | How it's implemented in this project |
 |---|---|
-| **Tools, not knowledge** | `get_runbook_steps(metric)` reads the runbook file directly by metric name via `RUNBOOK_MAP`. No similarity search, no embedding gamble. When a runbook is updated, the agent picks it up instantly — no reindex needed. `search_runbooks` (semantic RAG) is demoted to a fallback for open-ended questions. Caveat: adding a new metric requires a manual `RUNBOOK_MAP` update in `alert_chatbot.py`. |
+| **Tools, not knowledge** | `get_runbook_steps(metric)` reads the runbook file directly by metric name via `RUNBOOK_MAP`. No similarity search, no embedding gamble. When a runbook is updated, the agent picks it up instantly — no reindex needed. Caveat: adding a new metric requires a manual `RUNBOOK_MAP` update in `alert_chatbot.py`. |
+| **State machine, not conversation state** | `DIAGNOSTIC_WORKFLOWS` defines the step sequence per metric in code (e.g. `p99_latency`: check health → check latency metrics → check pod resources → assess options → propose manifest). The agent calls `get_next_step(metric, completed_steps)` to find out what to do next. It never tracks where it is — the system does. State lives in tool arguments, not conversation history. |
 | **State machine, not conversation state** | `DIAGNOSTIC_WORKFLOWS` defines the step sequence per metric in code (e.g. `p99_latency`: check health → check latency metrics → check pod resources → assess options → propose manifest). The agent calls `get_next_step(metric, completed_steps)` to find out what to do next. It never tracks where it is — the system does. State lives in tool arguments, not conversation history. |
 | **Strict interfaces** | `propose_manifest` accepts a `change_type` enum (`scale_replicas`, `config_update`, `env_update`, `resource_limits`, `rollback`), not free-form text. Every tool returns typed JSON with `irreversible` and `reason` fields. `AgentResponse` is a Pydantic model — downstream consumers (UI, audit log, escalation gate) depend on known field names, not narrative text. |
 | **Code beats model** | `_assess_irreversibility()` regex-scans for irreversible keywords (`upgrade`, `scale`, `restart`, `delete`, `rollback`) instead of asking the LLM to self-assess. A 5-line regex is perfectly reliable. |
 | **Boring failure modes** | When the model hallucinates over runbook data, post-processing replaces the response with the actual runbook content. `parse_agent_response()` has a three-layer fallback: try JSON → try `===ASSESSMENT===` delimiter → return graceful defaults. No creative lies, just predictable degradation. |
-| **Bounded reasoning and context** | `MAX_ITERATIONS=8` covers the full 6-tool chain with two buffer cycles. `similarity_top_k=3` constrains the RAG fallback. The primary path uses direct file reads, avoiding context-window risk entirely for the main diagnostic flow. |
-| **Compact prompt** | The system prompt is ~20 lines. All behavior lives in 6 tool functions with typed schemas. Logic moves out of the prompt and into code — which is the direction structure points. |
+| **Bounded reasoning and context** | `MAX_ITERATIONS=8` covers the full 5-tool chain with three buffer cycles. The primary path uses direct file reads, avoiding context-window risk entirely for the main diagnostic flow. |
+| **Compact prompt** | The system prompt is ~20 lines. All behavior lives in 5 tool functions with typed schemas. Logic moves out of the prompt and into code — which is the direction structure points. |
 
 **Example 1: Direct Runbook Lookup via `get_runbook_steps`**
 
