@@ -293,14 +293,14 @@ Reopen count: {repeat_count}
 with st.expander("📡 Alert Context", expanded=True):
     st.code(alert_context, language="text")
 
-default_query = f"Why is {service} having issues? Troubleshoot {metric}."
+default_query = "Help me troubleshoot this issue"
 user_query = st.text_area("💬 Ask the diagnostic agent:", default_query)
 
 col1, col2 = st.columns([1, 5])
 with col1:
     submitted = st.button("🔍 Diagnose", type="primary")
 with col2:
-    st.caption("Agent proposes changes — all mutations require your approval.")
+
 
 if submitted:
     if not user_query.strip():
