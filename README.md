@@ -2,7 +2,7 @@
 
 When an alert fires, engineers usually start from scratch, finding the runbook, checking metrics, figuring out what to try first. This tool tries to shorten that gap.
 It's a Streamlit agent chat interface that opens from the alert link, pre-loaded with context. It suggests runbook steps and diagnostic commands, and can propose K8s manifest changes.
-Inspired by [The Seven Habits of Effective Agentic Systems](https://agent-habits.github.io/habits/) and [Splunk State of Observability 2025](https://www.splunk.com/en_us/blog/observability/state-of-observability-2025.html).
+Inspired by [The Seven Habits of Effective Agentic Systems](https://agent-habits.github.io/habits/) by Inbar Rose and [Splunk State of Observability 2025](https://www.splunk.com/en_us/blog/observability/state-of-observability-2025.html).
 
 ## Architecture
 
@@ -218,12 +218,11 @@ Maturity in an agentic system doesn't mean more autonomy — it means more predi
 |---|---|
 | **Tools, not knowledge** | `get_runbook_steps(metric)` reads the runbook file directly by metric name via `RUNBOOK_MAP`. No similarity search, no embedding gamble. When a runbook is updated, the agent picks it up instantly — no reindex needed. Caveat: adding a new metric requires a manual `RUNBOOK_MAP` update in `alert_chatbot.py`. |
 | **State machine, not conversation state** | `DIAGNOSTIC_WORKFLOWS` defines the step sequence per metric in code (e.g. `p99_latency`: check health → check latency metrics → check pod resources → assess options → propose manifest). The agent calls `get_next_step(metric, completed_steps)` to find out what to do next. It never tracks where it is — the system does. State lives in tool arguments, not conversation history. |
-| **State machine, not conversation state** | `DIAGNOSTIC_WORKFLOWS` defines the step sequence per metric in code (e.g. `p99_latency`: check health → check latency metrics → check pod resources → assess options → propose manifest). The agent calls `get_next_step(metric, completed_steps)` to find out what to do next. It never tracks where it is — the system does. State lives in tool arguments, not conversation history. |
 | **Strict interfaces** | `propose_manifest` accepts a `change_type` enum (`scale_replicas`, `config_update`, `env_update`, `resource_limits`, `rollback`), not free-form text. Every tool returns typed JSON with `irreversible` and `reason` fields. `AgentResponse` is a Pydantic model — downstream consumers (UI, audit log, escalation gate) depend on known field names, not narrative text. |
 | **Code beats model** | `_assess_irreversibility()` regex-scans for irreversible keywords (`upgrade`, `scale`, `restart`, `delete`, `rollback`) instead of asking the LLM to self-assess. A 5-line regex is perfectly reliable. |
 | **Boring failure modes** | When the model hallucinates over runbook data, post-processing replaces the response with the actual runbook content. `parse_agent_response()` has a three-layer fallback: try JSON → try `===ASSESSMENT===` delimiter → return graceful defaults. No creative lies, just predictable degradation. |
 | **Bounded reasoning and context** | `MAX_ITERATIONS=8` covers the full 5-tool chain with three buffer cycles. The primary path uses direct file reads, avoiding context-window risk entirely for the main diagnostic flow. |
-| **Compact prompt** | The system prompt is ~20 lines. All behavior lives in 5 tool functions with typed schemas. Logic moves out of the prompt and into code — which is the direction structure points. |
+| **Compact prompt** | The system prompt is ~5 lines. All behavior lives in 5 tool functions with typed schemas. Logic moves out of the prompt and into code — which is the direction structure points. |
 
 **Example 1: Direct Runbook Lookup via `get_runbook_steps`**
 
@@ -310,9 +309,10 @@ Thought: The next step is to check the health endpoint.
 ```
 
 **Agent response:**
-Based on runbook R53 (High Inference Latency), start by checking the health endpoint and latency metrics:
-1. `curl -s http://inference-api:8000/health`
-2. `curl -s http://inference-api:8000/metrics | grep inference_latency`
-3. Check pod resources: `kubectl top pods -l app=inference-api`
+curl -s http://inference-api:8000/health
+curl -s http://inference-api:8000/metrics | grep inference_latency
+kubectl top pods -l app=inference-api
+
+To troubleshoot, start with the diagnostic commands above. The runbook suggests checking health endpoint and latency metrics first.
 
 

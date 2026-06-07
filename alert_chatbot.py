@@ -283,14 +283,20 @@ def _extract(obj, default=""):
     """
     if isinstance(obj, str):
         return obj
+    if isinstance(obj, list):
+        return ", ".join(str(v) for v in obj)
     if isinstance(obj, dict):
         for v in obj.values():
             if isinstance(v, str) and v != "string":
                 return v
+            if isinstance(v, list):
+                return ", ".join(str(x) for x in v)
             if isinstance(v, dict):
                 for v2 in v.values():
                     if isinstance(v2, str) and v2 != "string":
                         return v2
+                    if isinstance(v2, list):
+                        return ", ".join(str(x) for x in v2)
     return default
 
 

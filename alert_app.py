@@ -63,19 +63,11 @@ if "ticket_closed" not in st.session_state:
 if "mttr_seconds" not in st.session_state:
     st.session_state.mttr_seconds = None
 
-_PROMPT_TEMPLATE = """SRE agent. Never run commands yourself.
+_PROMPT_TEMPLATE = """SRE agent. Never run commands yourself. Call tools silently.
 
-Call these tools in order for every alert. Do not ask the user what to do next — just call the next tool.
+Order: get_runbook_steps → get_next_step + suggest_diagnostic_command (repeat) → assess_options → propose_manifest.
 
-1. get_runbook_steps(metric) — FIRST. Direct runbook lookup by metric name.
-2. get_next_step(metric, completed_steps) — SECOND. Determine the first diagnostic step.
-3. suggest_diagnostic_command(service, symptom) — Get the command for the current step.
-4. Call get_next_step again with updated completed_steps. Repeat steps 3-4 until no more steps.
-5. assess_options(service, situation) — Generate tradeoff analysis for remediation.
-6. propose_manifest(service, change_type, params) — Propose a K8s manifest if a change is needed.
-7. Respond to the user with findings. When you reference runbook content, cite the section name — e.g. "Per [Section: Diagnostic Steps] in the runbook, the first step is..."
-
-Now handle this alert:
+Cite sections as [Section: Name]. No tool traces. No step-by-step. 3 sentences max.
 
 Alert: {alert_id} | Service: {service} | Metric: {metric} | Severity: {severity}"""
 
@@ -86,14 +78,22 @@ JSON_DEFAULT = {"result": "", "irreversible": False, "reason": ""}
 
 
 def _extract_runbook_commands(text: str) -> str:
-    """Extract diagnostic commands from the first runbook result only."""
+    """Extract diagnostic commands with descriptions from the first runbook result only."""
+    import re as _re
     lines = []
+    last_desc = ""
     for line in text.split("\n"):
         if line.startswith("--- Result 2 "):
             break
         stripped = line.strip()
+        if "**" in stripped and not stripped.startswith("```"):
+            label = _re.sub(r'\*+', '', stripped).strip()
+            last_desc = label
         if stripped.startswith("curl ") or stripped.startswith("kubectl "):
-            lines.append(stripped)
+            if last_desc:
+                lines.append(f"# {last_desc}")
+                last_desc = ""
+            lines.append("  " + stripped)
     return "\n".join(lines)
 
 
@@ -159,7 +159,7 @@ def _derive_cited_sections(metric: str, completed_steps: list[str]) -> list[str]
 def _assess_irreversibility(text: str):
     """Check if text contains irreversible action suggestions (upgrade, scale, restart, delete, etc.)."""
     import re
-    keywords = r'\b(upgrade|scale\s+(up|down|replicas)|restart|delete|failover|rollback|terminate|kill)\b'
+    keywords = r'\b(upgrade|scale|restart|delete|failover|rollback|terminate|kill)\b'
     match = re.search(keywords, text, re.IGNORECASE)
     if match:
         return True, f"Suggestion involves: {match.group()}"
@@ -243,14 +243,12 @@ def run_agent_sync(query: str) -> AgentResponse:
         # response with the actual runbook content (small model can't be trusted).
         resolution = _extract_runbook_resolution(rb_text)
         if resolution and "Option 1" in resolution:
-            # Ensure proper markdown: blank line before dash lists
             import re as _re
             formatted = _re.sub(r'(\*\*.*?\*\*)\n(\s*-)', r'\1\n\n\2', resolution)
             resp.reasoning = "Resolution options from runbook:\n\n" + formatted
         else:
-            # Only inject diagnostic commands when there are no resolution options
-            if cmds and not any(cmd in resp.reasoning for cmd in ["curl ", "kubectl "]):
-                resp.reasoning = "Diagnostic commands from runbook:\n" + cmds + "\n\n---\n\n" + resp.reasoning
+            if cmds:
+                resp.reasoning = "Diagnostic commands from runbook:\n\n```bash\n" + cmds + "\n```"
 
         # Extract proposed manifest if present
         manifest_yaml = _extract_manifest(resp.reasoning)
@@ -296,11 +294,7 @@ with st.expander("📡 Alert Context", expanded=True):
 default_query = "Help me troubleshoot this issue"
 user_query = st.text_area("💬 Ask the diagnostic agent:", default_query)
 
-col1, col2 = st.columns([1, 5])
-with col1:
-    submitted = st.button("🔍 Diagnose", type="primary")
-with col2:
-
+submitted = st.button("🔍 Diagnose", type="primary")
 
 if submitted:
     if not user_query.strip():
