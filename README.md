@@ -166,7 +166,7 @@ These constraints make authority legible. An engineer inspecting the codebase ca
 
 **Deferral** is the mechanism by which the agent acknowledges uncertainty. It contributes intelligence while preserving human authority over actions that cannot be easily undone. No destructive action is ever automated - the agent can suggest a restart or propose a manifest change, but it never executes or applies anything. The engineer remains the decision-maker for anything that matters.
 
-**Irreversibility** is detected deterministically after the agent responds, using keyword scanning on the agent's output text. This is more reliable than asking the model to self-assess, since small LLMs (3B-9B) inconsistently produce structured irreversibility declarations.
+**Irreversibility** is detected deterministically using keyword scanning on the agent's output text before display to the user. This is more reliable than asking the model to self-assess, since small LLMs (3B-9B) inconsistently produce structured irreversibility declarations.
 
 The `AgentResponse` Pydantic model carries the result:
 ```python
