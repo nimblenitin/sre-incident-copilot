@@ -191,23 +191,20 @@ This is flagged as irreversible because a misconfigured manifest - for example, 
 
 **Example: Kubernetes Upgrade Decision:**
 
-**Scenario:** A recurring pod crash loop on `inference-api` has been traced to a known Kubernetes bug. The fix is a version upgrade - but upgrading carries its own risk. The agent suggests steps, but more importantly with tradeoff to defer the risk to a human successfully.
+A recurring pod crash loop on `inference-api` has been traced to a known Kubernetes bug in 1.26.3 (fixed in 1.27.x). The agent cannot upgrade the cluster - it presents the tradeoffs and defers the decision. The output shows both options with their risks, then explicitly states the decision is deferred to the engineer because the agent cannot evaluate business risk tolerance.
 
 **Agent output:**
 
-**Incident: `inference-api` crash loop - CrashBackOffLoop - 13:45 UTC**
+> **Incident:** `inference-api` crash loop - `CrashBackOffLoop` - 13:45 UTC  
+> **Root cause:** Pods hitting a memory accounting bug in Kubernetes 1.26.3, triggered under memory pressure from batch inference jobs.
+>
+> **Option A: Upgrade to 1.27.x** — Patches the bug directly. Risk: 1.27.x changes kubelet eviction manager behavior under high pod density (we run 180+ pods/node). May fix the crash loop and introduce a different one.
+>
+> **Option B: Hold at 1.26.3** — Avoids upgrade risk. Risk: Crash loop continues. Workaround is capping memory requests on batch jobs, degrading inference throughput ~15-20%.
+>
+> Neither option is safe. Upgrading trades a known problem for a possible one. Not upgrading trades a fix for guaranteed degraded performance. This decision requires evaluating business risk tolerance — the agent defers to the engineer.
 
-Pods hitting a memory accounting bug in Kubernetes 1.26.3 is a known issue - fixed in 1.27.x. We're seeing it trigger specifically under the memory pressure patterns from our batch inference jobs.
-
-Action options with tradeoffs:
-
-**Upgrade to 1.27.x** - patches the bug directly. But 1.27.x ships with a change to the kubelet eviction manager that behaves differently under high pod density. We're running 180+ pods per node on several clusters. That's above the threshold where the new eviction behavior has caused instability in reported cases. We may fix this crash loop and introduce a different one.
-
-**Hold at 1.26.3** - avoids upgrade risk. But the crash loop continues. The workaround is capping memory requests on batch jobs, which degrades inference throughput by an estimated 15-20%. That's a mitigation, not a fix. The underlying bug stays live.
-
-Neither option is safe. Upgrading trades a known problem for a possible one. Not upgrading trades a fix for guaranteed degraded performance.
-
-This is irreversible either way - upgrading could destabilise other workloads on the same cluster, and not upgrading locks in degraded throughput indefinitely. The right call depends on risk tolerance and business context the agent cannot evaluate. Hence sharing the full tradeoff and deferring the decision to you.
+The UI shows this as a red informational warning with no approval checkbox — the engineer evaluates and acts independently. No manifest is proposed because there is no safe manifest to write.
 
 ### Habit 5 - Optimizes for System Outcomes
 
