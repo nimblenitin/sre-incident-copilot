@@ -145,7 +145,7 @@ Every tool call carries a `reason_code` derived from the tool name and arguments
 - `propose_manifest(service="inference-api", change_type="rollback")` → `"propose_rollback_change"`
 
 **Key detail — `_extract()` guard:**
-Small models (3B-8B) have broken function calling. They often pass the JSON schema properties dict as the argument value instead of a plain string. `_extract()` walks nested dicts to find the actual text, preventing wasted retries.
+Small models (3B-8B) have broken function calling. They often pass the JSON schema properties dict as the argument value instead of a plain string, or pass lists instead of comma-separated strings. `_extract()` walks nested dicts and joins list elements to find the actual text, preventing wasted retries.
 
 **`_make_normalized_tool()` wrapper:**
 Uses `functools.wraps` to preserve the original function's `inspect.signature()` even when the wrapper uses `**kwargs`. This ensures `FunctionTool` generates correct tool schemas that the LLM can parse.
@@ -195,11 +195,11 @@ http://localhost:8501/?alert_id=InferenceHighLatency-inference-api&service=infer
 
 **Post-processing in `run_agent_sync()`:**
 1. Pre-fetches runbook data via `get_runbook_steps(metric=metric)`
-2. Extracts diagnostic commands (`_extract_runbook_commands()`) and resolution options (`_extract_runbook_resolution()`)
+2. Extracts diagnostic commands with descriptions (`_extract_runbook_commands()`) and resolution options (`_extract_runbook_resolution()`)
 3. If runbook contains "Option 1" — agent response is **replaced entirely** with runbook content (3B-8B model reliably hallucinates over runbook data)
-4. Otherwise — diagnostic commands are **prepended** to the agent response
+4. Otherwise — commands are displayed as the sole output (agent response is suppressed when commands exist, since it's redundant or hallucinated)
 5. Extracts `manifest_yaml` from code blocks (`_extract_manifest()`)
-6. Runs `_assess_irreversibility()` keyword-scan on final text
+6. Runs `_assess_irreversibility()` keyword-scan on final text — regex: `\b(upgrade|scale|restart|delete|failover|rollback|terminate|kill)\b`
 7. Sets `confidence = 0.8 if runbook_data_exists else 0.3`
 8. If manifest YAML found, `has_irreversible_suggestion = True` regardless of keyword scan
 
@@ -224,7 +224,7 @@ http://localhost:8501/?alert_id=InferenceHighLatency-inference-api&service=infer
 - Logged in `session_start` event as `repeat_count`
 
 **System prompt construction:**
-Alert context is embedded directly in the system prompt. The prompt uses explicit numbered ordering (1-7) with no conditional permissions — the agent must follow the sequence without deciding to skip steps. It includes a citation instruction ("cite the section name — e.g. 'Per [Section: Diagnostic Steps]...'") so that `cited_sections` can be traced back to workflow state.
+Alert context is embedded directly in the system prompt. The prompt is ~5 lines: "SRE agent. Never run commands yourself. Call tools silently. Order: get_runbook_steps → get_next_step + suggest_diagnostic_command (repeat) → assess_options → propose_manifest. Cite sections as [Section: Name]. No tool traces. No step-by-step. 3 sentences max." The agent must follow the sequence without deviating, and output is kept concise.
 
 **Trace ID and decision trace:**
 On each "Diagnose" click, `alert_app.py` generates a single `trace_id` (UUID) and calls `telemetry.set_trace_id(trace_id)`. After the agent responds, `run_agent_sync()` calls `telemetry.log_decision_trace()` with:
@@ -316,14 +316,14 @@ Importable Grafana dashboard with 6 panels:
 | Agent is read-only | 5 tools return text/JSON only; no mutation tools; system prompt says "Never apply changes directly" |
 | Alert context without extra API call | Context embedded in system prompt via URL query params |
 | LLM model | `llama3.1:8b` via `Ollama(model="llama3.1:8b")` — reliable tool calling, ~10-20s |
-| Small model hallucinates over runbook data | Post-processing replaces agent response with actual runbook content when structured options exist |
+| Small model hallucinates over runbook data | Post-processing replaces agent response entirely with actual runbook content — commands replace output when available, resolution options replace when "Option 1" is present |
 | Deterministic irreversibility (not LLM self-assessment) | `_assess_irreversibility()` regex-scan; `_keyword_check()` on runbook text; `COMMAND_IRREVERSIBILITY_MAP` for diagnostic commands |
 | Deterministic reason codes (not LLM-generated) | `_derive_reason_code(tool_name, args)` generates `reason_code` for every tool call at the telemetry wrapper layer — zero model involvement |
 | Tool ownership for accountability | `TOOL_OWNERS` dict tags every tool with a human team; `owner_team` logged in every `tool_call` event |
 | Decision trace with trace_id | One `trace_id` (UUID) per agent run shared by all events; `decision_trace` event records intent, context, constraints, policies, tool_chain |
 | Consecutive clicks in Streamlit | Cached event loop in `st.session_state` + `nest_asyncio.apply()` |
 | Irreversible action gate | Two modes: manifest (checkbox + "Approve" button → writes YAML to /tmp) vs informational (red warning only) |
-| Broken function-calling in small models | `_extract()` guard unwraps schema-object args |
+| Broken function-calling in small models | `_extract()` guard unwraps schema-object args and joins list-type args into comma-separated strings |
 | MTTR tracking | "Close ticket" button records close time, computes mttr_seconds |
 | Reopen tracking | `get_repeat_count()` scans prior audit logs for same metric; displayed in alert context |
 | Feedback loop | Post-resolution form logs helped/actual_fix to audit trail |
@@ -334,17 +334,17 @@ Importable Grafana dashboard with 6 panels:
 
 ## Habits Applied
 
-- **Habit 1 (Clearly Bounded Role):** One job — suggest what to check next. Never runs commands, never mutates state. Five read-only tools, all capabilities enumerated in system prompt. Hallucinated tool calls discarded.
+- **Habit 1 (Clearly Bounded Role):** One job — suggest what to check next. Never runs commands, never mutates state. System prompt says "Never run commands yourself." Five read-only tools, all capabilities enumerated. Hallucinated tool calls discarded.
 
 - **Habit 2 (Embedded in Workflows):** Slots into existing on-call pipeline. Prometheus → Alertmanager → Slack → engineer clicks → agent appears. Nothing about the alert workflow changes; the agent just makes finding the next step faster.
 
-- **Habit 3 (Explicit Constraints):** No mutation tools, `max_iterations=8` on `run()`, `_extract()` guard, system prompt with explicit numbered ordering (1-6, no conditional language — the agent must follow the sequence without permission to stop early).
+- **Habit 3 (Explicit Constraints):** No mutation tools, `max_iterations=8` on `run()`, `_extract()` guard (handles dict-wrapped and list-type args), system prompt with "No tool traces. No step-by-step. 3 sentences max." guardrails. Irreversibility regex: `\b(upgrade|scale|restart|delete|failover|rollback|terminate|kill)\b`.
 
 - **Habit 4 (Defers Irreversibility):** Deterministic keyword scanning replaces LLM self-assessment. Two-mode escalation gate: manifest proposals require checkbox + "Approve" button; upgrade decisions show red warning only. The agent proposes, the engineer disposes.
 
 - **Habit 5 (Optimizes for System Outcomes):** Post-resolution feedback form tracks whether suggestions helped. Close ticket button records MTTR. Reopen tracking surfaces incomplete fixes. `metrics_exporter.py` feeds audit data into Prometheus/Grafana for aggregate MTTR comparison between agent-assisted and unassisted resolutions.
 
-- **Habit 6 (Progress Through Structure):** `get_runbook_steps` replaces RAG with direct file lookup — no similarity gamble, no reindex needed. `get_next_step` implements the runbook state machine in code — the agent calls it to determine what to do next rather than tracking state in conversation. `propose_manifest` uses typed enums. `_assess_irreversibility()` is deterministic regex — code beats model. `AgentResponse` is a Pydantic model with typed fields. Post-processing replaces hallucinated output with structured runbook data.
+- **Habit 6 (Progress Through Structure):** `get_runbook_steps` replaces RAG with direct file lookup — no similarity gamble, no reindex needed. `get_next_step` implements the runbook state machine in code — the agent calls it to determine what to do next rather than tracking state in conversation. `propose_manifest` uses typed enums. `_assess_irreversibility()` is deterministic regex — code beats model. `_extract()` handles both dict-wrapped and list-type args from small models. `_extract_runbook_commands()` pulls command descriptions from runbook bold-labels. `AgentResponse` is a Pydantic model with typed fields. Post-processing replaces hallucinated output entirely with structured runbook data.
 
 - **Habit 7 (Visible Accountability):** Every agent run generates one `trace_id` (UUID) shared by all events in that run — `session_start`, `tool_call` (with `owner_team` from `TOOL_OWNERS` and deterministic `reason_code` from `_derive_reason_code()`), `decision_trace` (records intent, context_retrieved, constraint_checks, policies_applied, tool_chain), `interaction` (with `cited_runbooks` and `cited_sections` derived from completed diagnostic steps), `approval_requested`, `resolution_feedback`, and `ticket_closed`. Filter events by `trace_id` to reconstruct the full causal chain — intent through tool calls to final response. The `decision_trace` event answers "why did the agent do that" without replaying the model. Full audit trail accessible for post-incident review via `audit_logs/*.jsonl`.
 
@@ -352,7 +352,7 @@ Importable Grafana dashboard with 6 panels:
 
 ## Known Issues
 
-1. **Full tool chain not guaranteed** — The agent reliably calls `get_runbook_steps` and `get_next_step` but does not always reach `suggest_diagnostic_command`, `assess_options`, or `propose_manifest`. The system prompt now uses explicit numbered ordering (1-6, no conditional language) to push harder, but the 8B model may still stop early. Mitigated by post-processing (runbook content replacement) which fills in diagnostic commands and resolution options.
+1. **Full tool chain not guaranteed** — The agent reliably calls `get_runbook_steps` and `get_next_step` but does not always reach `suggest_diagnostic_command`, `assess_options`, or `propose_manifest`. The system prompt now uses a concise ordering line to push harder, but the 8B model may still stop early. Mitigated by post-processing (runbook content replacement) which fills in diagnostic commands and resolution options.
 2. **CPU-only inference** — ~10-20s per query on llama3.1:8b. No GPU available in current environment.
 3. **Single-turn only** — Each Diagnose click is independent. No chat history carried across turns.
 4. **`RUNBOOK_MAP` must be updated manually** — Adding a new runbook requires editing `RUNBOOK_MAP` in `alert_chatbot.py` to map the metric name to the file path. Not automated.
