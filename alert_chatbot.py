@@ -46,6 +46,7 @@ def _merge_thinking(response: ChatResponse) -> ChatResponse:
 
 from pydantic import BaseModel
 
+
 RUNBOOK_MAP = {
     "p99_latency": "data/runbooks/high-latency.md",
     "high_latency": "data/runbooks/high-latency.md",
@@ -390,7 +391,7 @@ def get_runbook_steps(metric: str = "") -> str:
         return _json.dumps({"result": "No metric provided.", "irreversible": False, "reason": ""})
     filepath = RUNBOOK_MAP.get(metric)
     if not filepath:
-        return _json.dumps({"result": "", "irreversible": False, "reason": ""})
+        return _json.dumps({"result": "", "irreversible": False, "reason": f"No runbook exists for metric: {metric}"})
     import os as _os
     if not _os.path.exists(filepath):
         return _json.dumps({"result": "", "irreversible": False, "reason": f"Runbook file not found: {filepath}"})
@@ -403,18 +404,36 @@ def get_runbook_steps(metric: str = "") -> str:
 
 
 def get_next_step(metric: str = "", completed_steps: str = "") -> str:
-    """After calling get_runbook_steps, call this to determine which diagnostic step to perform next. Pass the metric name and a comma-separated list of completed step names. Returns JSON with next_step."""
+    """After calling get_runbook_steps, call this to see which diagnostic steps are valid next. Pass the metric name and a comma-separated list of completed step names. Returns JSON with valid_next_steps, mandatory_before_escalation, completed, all_mandatory_complete."""
     import json as _json
     metric = _extract(metric, metric)
     completed_raw = _extract(completed_steps, completed_steps)
     workflow = DIAGNOSTIC_WORKFLOWS.get(metric, [])
     if not workflow:
-        return _json.dumps({"next_step": "assess_options", "reason": "No workflow defined; proceed to assessment."})
+        return _json.dumps({
+            "valid_next_steps": [],
+            "mandatory_before_escalation": [],
+            "completed": [],
+            "all_mandatory_complete": False,
+            "reason": "No diagnostic workflow defined for this metric."
+        })
     completed = [s.strip() for s in completed_raw.split(",") if s.strip()]
-    for step in workflow:
-        if step not in completed:
-            return _json.dumps({"next_step": step})
-    return _json.dumps({"next_step": "resolved"})
+    non_diagnostic = {"assess_options", "propose_manifest", "assess_upgrade_risk"}
+    mandatory = [s for s in workflow if s not in non_diagnostic]
+    unknown = [s for s in completed if s not in workflow]
+    all_mandatory_complete = all(s in completed for s in mandatory)
+    valid = [s for s in workflow if s not in completed]
+    if not all_mandatory_complete:
+        valid = [s for s in valid if s not in non_diagnostic]
+    result = {
+        "valid_next_steps": valid,
+        "mandatory_before_escalation": mandatory,
+        "completed": completed,
+        "all_mandatory_complete": all_mandatory_complete,
+    }
+    if unknown:
+        result["warning"] = f"Unknown step IDs ignored: {unknown}. Use exact IDs from valid_next_steps: {workflow}"
+    return _json.dumps(result)
 
 
 def suggest_diagnostic_command(service: str = "", symptom: str = "") -> str:
@@ -444,13 +463,43 @@ def suggest_diagnostic_command(service: str = "", symptom: str = "") -> str:
     return _json.dumps({"command": cmd, "irreversible": irreversible, "reason": reason})
 
 
-def propose_manifest(service: str = "", change_type: str = "", params: str = "") -> str:
-    """Generate a K8s manifest YAML for a proposed change. Agent only returns text — UI applies on approval. Returns JSON with manifest, irreversible, reason."""
+def _load_allowed_change_names() -> list[str]:
+    """Load allowed manifest change type names from config/allowed-manifest-changes.yaml."""
+    import os as _os
+    import yaml as _yaml
+    path = _os.path.join(_os.path.dirname(__file__), "config", "allowed-manifest-changes.yaml")
+    if not _os.path.exists(path):
+        return ["config_update", "scale_replicas", "env_update", "resource_limits", "rollback"]
+    with open(path) as f:
+        data = _yaml.safe_load(f)
+    return [entry["name"] for entry in data.get("change_types", [])]
+
+ALLOWED_MANIFEST_CHANGES = _load_allowed_change_names()
+
+
+def propose_manifest(service: str = "", change_type: str = "", params: str = "", metric: str = "", completed_steps: str = "") -> str:
+    """Generate a K8s manifest YAML for a proposed change. Agent only returns text — UI applies on approval. Returns JSON with manifest, irreversible, reason. Accepted change_type values are defined in config/allowed-manifest-changes.yaml."""
     import json as _json
     import yaml as _yaml
     service = _extract(service, service)
     change_type = _extract(change_type, change_type)
     params_str = _extract(params, params)
+    metric = _extract(metric, metric)
+
+    # Guard: mandatory diagnostic steps must be complete before escalation
+    if metric:
+        wf = DIAGNOSTIC_WORKFLOWS.get(metric, [])
+        non_diag = {"assess_options", "propose_manifest", "assess_upgrade_risk"}
+        mandatory = [s for s in wf if s not in non_diag]
+        cs_raw = _extract(completed_steps, completed_steps)
+        cs_list = [s.strip() for s in cs_raw.split(",") if s.strip()]
+        remaining = [s for s in mandatory if s not in cs_list]
+        if remaining:
+            return _json.dumps({
+                "error": "mandatory diagnostic steps not yet complete",
+                "remaining_mandatory": remaining,
+                "instruction": "complete remaining diagnostic steps before proposing a manifest change"
+            })
     try:
         params_dict = _json.loads(params_str) if params_str else {}
     except _json.JSONDecodeError:
@@ -565,13 +614,29 @@ def propose_manifest(service: str = "", change_type: str = "", params: str = "")
         return _json.dumps({"manifest": "", "irreversible": False, "reason": reason})
 
 
-def assess_options(service: str = "", situation: str = "") -> str:
+def assess_options(service: str = "", situation: str = "", metric: str = "", completed_steps: str = "") -> str:
     """Call when asked for remediation options or 'what should we do'. Generates structured tradeoff analysis with 2-3 options including reversibility, risk, and tradeoffs. Returns JSON with options array and recommendation."""
     import json as _json
     import re as _re
 
     service = _extract(service, service)
     situation = _extract(situation, situation)
+    metric = _extract(metric, metric)
+
+    # Guard: mandatory diagnostic steps must be complete before escalation
+    if metric:
+        wf = DIAGNOSTIC_WORKFLOWS.get(metric, [])
+        non_diag = {"assess_options", "propose_manifest", "assess_upgrade_risk"}
+        mandatory = [s for s in wf if s not in non_diag]
+        cs_raw = _extract(completed_steps, completed_steps)
+        cs_list = [s.strip() for s in cs_raw.split(",") if s.strip()]
+        remaining = [s for s in mandatory if s not in cs_list]
+        if remaining:
+            return _json.dumps({
+                "error": "mandatory diagnostic steps not yet complete",
+                "remaining_mandatory": remaining,
+                "instruction": "complete remaining diagnostic steps before assessing options"
+            })
 
     if not situation:
         return _json.dumps({
@@ -620,13 +685,27 @@ Settings.llm = Ollama(
 )
 
 
-TOOL_OWNERS = {
-    "get_runbook_steps": "SRE Runbook Team",
-    "get_next_step": "SRE Runbook Team",
-    "suggest_diagnostic_command": "SRE Engineering",
-    "assess_options": "SRE Engineering",
-    "propose_manifest": "Platform Team",
-}
+TOOL_OWNERS = {}
+_tool_owners_loaded = False
+
+
+def _load_tool_owners() -> dict:
+    """Load tool ownership mapping from config/tool-owners.yaml."""
+    global TOOL_OWNERS, _tool_owners_loaded
+    if _tool_owners_loaded:
+        return TOOL_OWNERS
+    import os as _os
+    import yaml as _yaml
+    path = _os.path.join(_os.path.dirname(__file__), "config", "tool-owners.yaml")
+    if _os.path.exists(path):
+        with open(path) as f:
+            data = _yaml.safe_load(f)
+            TOOL_OWNERS = data.get("tool_owners", {})
+    _tool_owners_loaded = True
+    return TOOL_OWNERS
+
+
+_load_tool_owners()
 
 
 def _derive_reason_code(tool_name: str, args: dict) -> str:

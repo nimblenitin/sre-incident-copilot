@@ -63,15 +63,32 @@ if "ticket_closed" not in st.session_state:
 if "mttr_seconds" not in st.session_state:
     st.session_state.mttr_seconds = None
 
-_PROMPT_TEMPLATE = """SRE agent. Never run commands yourself. Call tools silently.
+_PROMPT_TEMPLATE = """You are an SRE diagnostic agent investigating a live incident.
+You have 5 tools. Never run commands yourself. Never mutate state.
 
-Order: get_runbook_steps → get_next_step + suggest_diagnostic_command (repeat) → assess_options → propose_manifest.
+CRITICAL: Use EXACT step IDs from valid_next_steps (e.g. check_health_endpoint).
+Do NOT make up step names. Pass only comma-separated exact IDs to get_next_step.
 
-Cite sections as [Section: Name]. No tool traces. No step-by-step. 3 sentences max.
+Your loop:
+1. Call get_runbook_steps(metric) once to load the runbook.
+2. Call get_next_step(metric, completed_steps="") to see valid_next_steps.
+   - Use "" on first call. On subsequent calls, join exact step IDs you've done with commas.
+3. Pick a step from valid_next_steps and map it to a symptom keyword:
+   - check_health_endpoint -> symptom="health"
+   - check_latency_metrics -> symptom="latency"
+   - check_pod_resources  -> symptom="resources"
+   - check_error_logs     -> symptom="error"
+   - check_pool_metrics   -> symptom="pool"
+   - check_connection_count -> symptom="pool"
+   Then call suggest_diagnostic_command(service=service, symptom=symptom).
+4. Repeat: get_next_step(metric, completed_steps=exact IDs done so far), then pick next step.
+5. When get_next_step returns all_mandatory_complete=True, do nothing else.
+
+IMPORTANT: No tool traces. No "Thought:". No "assistant". Output nothing except the diagnostic commands.
 
 Alert: {alert_id} | Service: {service} | Metric: {metric} | Severity: {severity}"""
 
-MAX_ITERATIONS = 8
+MAX_ITERATIONS = 12
 
 
 JSON_DEFAULT = {"result": "", "irreversible": False, "reason": ""}
@@ -128,7 +145,7 @@ def _extract_manifest(text: str) -> str:
 def _derive_cited_sections(metric: str, completed_steps: list[str]) -> list[str]:
     """Determine cited runbook sections from completed diagnostic steps.
 
-    Relies on the diagnostic workflow state machine, not text scanning.
+    Relies on the diagnostic workflow definition, not text scanning.
     Each completed step ID maps to a human-readable section name.
     """
     from alert_chatbot import DIAGNOSTIC_WORKFLOWS
@@ -183,13 +200,16 @@ def run_agent_sync(query: str) -> AgentResponse:
     )
 
     async def _inner():
-        from alert_chatbot import get_runbook_steps
+        from alert_chatbot import get_runbook_steps, get_next_step
         import json as _json
 
-        # Pre-fetch runbook data for post-processing — direct lookup
+        # Pre-fetch runbook data for cite tracking and context
         rb_raw = _json.loads(get_runbook_steps(metric=metric))
         rb_text = rb_raw.get("result", "")
-        cmds = _extract_runbook_commands(rb_text)
+        rb_reason = rb_raw.get("reason", "")
+
+        # Extract diagnostic commands from runbook for display
+        diagnostic_commands = _extract_runbook_commands(rb_text) if rb_text else ""
 
         # Derive sections from diagnostic workflow, not text scanning
         from alert_chatbot import DIAGNOSTIC_WORKFLOWS
@@ -239,17 +259,6 @@ def run_agent_sync(query: str) -> AgentResponse:
             confidence=1.0,
         )
 
-        # When runbook has structured resolution options, replace the agent's hallucinated
-        # response with the actual runbook content (small model can't be trusted).
-        resolution = _extract_runbook_resolution(rb_text)
-        if resolution and "Option 1" in resolution:
-            import re as _re
-            formatted = _re.sub(r'(\*\*.*?\*\*)\n(\s*-)', r'\1\n\n\2', resolution)
-            resp.reasoning = "Resolution options from runbook:\n\n" + formatted
-        else:
-            if cmds:
-                resp.reasoning = "Diagnostic commands from runbook:\n\n```bash\n" + cmds + "\n```"
-
         # Extract proposed manifest if present
         manifest_yaml = _extract_manifest(resp.reasoning)
         resp.manifest_yaml = manifest_yaml
@@ -258,11 +267,41 @@ def run_agent_sync(query: str) -> AgentResponse:
         irreversible, reason = _assess_irreversibility(resp.reasoning)
         resp.has_irreversible_suggestion = irreversible or bool(manifest_yaml)
         resp.irreversible_reason = reason or (f"Proposed manifest change for {service}" if manifest_yaml else "")
-        resp.confidence = 0.8 if rb_text else 0.3
+
+        # Confidence based on whether all mandatory diagnostic steps were completed
+        final_state = _json.loads(get_next_step(
+            metric=metric,
+            completed_steps=",".join(telemetry.completed_diagnostic_steps)
+        ))
+        resp.confidence = 0.8 if final_state.get("all_mandatory_complete") else 0.3
 
         object.__setattr__(resp, "_cited_runbooks", context_retrieved)
         cited_sections = _derive_cited_sections(metric, telemetry.completed_diagnostic_steps)
         object.__setattr__(resp, "_cited_sections", cited_sections)
+        object.__setattr__(resp, "_diagnostic_commands", diagnostic_commands)
+        object.__setattr__(resp, "_runbook_error", rb_reason if not rb_text else "")
+
+        # Get remediation assessment directly (bypasses agent summarization)
+        assessment = ""
+        if final_state.get("all_mandatory_complete"):
+            from alert_chatbot import assess_options as _assess_options
+            assessment_raw = _json.loads(_assess_options(
+                service=service,
+                situation="high p99 latency",
+                metric=metric,
+                completed_steps=",".join(telemetry.completed_diagnostic_steps)
+            ))
+            if "options" in assessment_raw and "recommendation" in assessment_raw:
+                opts_lines = []
+                for opt in assessment_raw["options"]:
+                    label = opt.get("label", "")
+                    risk = opt.get("risk", "")
+                    reversibility = opt.get("reversibility", "")
+                    tradeoffs = opt.get("tradeoffs", "")
+                    opts_lines.append(f"- {label} | Risk: {risk} | {reversibility} | {tradeoffs}")
+                assessment = "\n".join(opts_lines)
+                assessment += f"\n\n**Recommendation:** {assessment_raw['recommendation']}"
+        object.__setattr__(resp, "_assessment", assessment)
 
         return resp
 
@@ -373,7 +412,23 @@ elif st.session_state.last_response:
 
     if resp.confidence < 0.7:
         st.warning(f"⚠️ Low confidence ({resp.confidence:.1f}) – recommend manual verification.")
-    st.markdown(resp.reasoning)
+
+    runbook_error = getattr(resp, "_runbook_error", "")
+    if runbook_error:
+        st.error(f"No runbook available for this alert: {runbook_error}")
+        st.info("Check the alert manually: review service logs, metrics, and recent changes.")
+    else:
+        diagnostic_commands = getattr(resp, "_diagnostic_commands", "")
+        if diagnostic_commands:
+            st.code(diagnostic_commands, language="bash")
+
+        assessment = getattr(resp, "_assessment", "")
+        if assessment:
+            st.markdown("### Remediation Assessment")
+            st.markdown(assessment)
+        else:
+            st.markdown(resp.reasoning)
+
     st.session_state.show_feedback = True
 
 # ── Post-resolution feedback form ──

@@ -1,7 +1,7 @@
 # SRE incident Co-Pilot
 
 When an alert fires, engineers usually start from scratch, finding the runbook, checking metrics, figuring out what to try first. This tool tries to shorten that gap.
-It's a Streamlit agent chat interface that opens from the alert link, pre-loaded with context. It suggests runbook steps and diagnostic commands, and can propose K8s manifest changes.
+It includes a Streamlit agent chat interface that opens from the alert link, pre-loaded with context. It suggests runbook steps and diagnostic commands, and can propose K8s manifest changes.
 Inspired by [The Seven Habits of Effective Agentic Systems](https://agent-habits.github.io/habits/) by Inbar Rose and [Splunk State of Observability 2025](https://www.splunk.com/en_us/blog/observability/state-of-observability-2025.html).
 
 ## Architecture
@@ -22,7 +22,7 @@ flowchart TB
         agent[ReActAgent<br/>alert context in system prompt]
         user[Engineer query] --> agent
         agent --> direct[get_runbook_steps<br/>direct file lookup by metric]
-        direct --> sm[get_next_step<br/>state machine: which step next?]
+        direct --> sm[get_next_step<br/>workflow constraint: which steps are valid?]
         sm --> agent
         agent --> user
     end
@@ -118,10 +118,21 @@ alert-chatbot/
 
 ### Habit 1 - Clearly Bounded Role
 
-This agent is bounded: it translates alert context and runbook knowledge into diagnostic suggestions and proposes manifest changes for an engineer to review. It never directly mutates state.
+Agents should have explicit, narrow roles defined by what they can do, what decisions they cannot make, and what authority they never hold, so they remain trustworthy, auditable, and composable.
 
-Five tools: `get_runbook_steps` (direct file lookup by metric name), `get_next_step` (state machine for diagnostic ordering), `suggest_diagnostic_command` (returns text, never runs it), `assess_options` (structured tradeoff analysis), and `propose_manifest` (generates K8s YAML written to disk only after engineer approval, never applied directly). Alert context arrives embedded in the system prompt, no API calls, no extra permissions. No tool mutates live state: no `restart_service`, no `failover_db`, no `clear_cache`.
+The agent is responsible for:
+- Loading the runbook for the firing metric
+- Running the diagnostic workflow constraint (`get_next_step`) to determine valid next steps
+- Suggesting read-only diagnostic commands (`suggest_diagnostic_command`)
+- Proposing remediation options (`assess_options`) and manifest changes (`propose_manifest`) for engineer review
 
+The agent is explicitly **not** responsible for:
+- Executing any command or mutation, all tools return text/JSON only
+- Deciding the diagnostic sequence, `get_next_step` constrains valid steps in code
+- Escalating before diagnostics are complete, code-level guards on `assess_options`/`propose_manifest` reject early escalation calls
+- Applying changes, `propose_manifest` writes to disk only after UI approval; no tool calls `kubectl`, `curl`, or mutates state
+
+This bounded role makes the agent predictable under stress, auditable in postmortems, and safe to compose with the existing on-call pipeline without unexpected side effects.
 
 ### Habit 2 - Embedded in Workflows
 
@@ -142,9 +153,11 @@ Constraints are not guardrails added after the fact, they are part of the agent'
 | No direct mutation | `FunctionTool` wraps only Python functions that return text, no tool exists for restart, failover, or any state change |
 | No shell execution | `suggest_diagnostic_command` returns a string, the system never calls `os.system()` or `subprocess` |
 | Alert context from URL params | Alert data is parsed from the URL query string, no API calls, no network permissions needed |
-| `max_iterations=8` | `MAX_ITERATIONS=8` covers the full 5-tool chain with three buffer cycles, consistent with Habit 3's explicit constraints |
-| Hallucinated tool rejection | The system prompt states that only 5 tools exist, and the `_extract()` guard discards malformed or nonexistent tool calls, enforced in code, not just prose |
-| Irreversible action flagging | `_assess_irreversibility()` deterministically scans the agent's output for keywords (`scale`, `restart`, `delete`, `failover`, etc.) and sets `has_irreversible_suggestion` - enforced by code, not left to the LLM |
+| `max_iterations=12` | `MAX_ITERATIONS=12` covers the full diagnostic loop (runbook + 3 step iterations + assessment) with buffer cycles |
+| Hallucinated tool rejection | `_extract()` guard discards malformed tool calls and joins list-type args into comma-separated strings; `get_next_step` warns when unknown step IDs are passed |
+| Step ID enforcement | `get_next_step` returns a `warning` field listing ignored IDs if the agent passes invented step names instead of exact IDs from `valid_next_steps` |
+| Mandatory step guards | `assess_options` and `propose_manifest` check `completed_steps` against the diagnostic workflow internally; return error dict if mandatory diagnostic steps are incomplete |
+| Irreversible action flagging | `_assess_irreversibility()` deterministically scans the agent's output for keywords (`scale`, `restart`, `delete`, `failover`, etc.) and sets `has_irreversible_suggestion`; enforced by code, not left to the LLM |
 | Manifest proposals are gated | `propose_manifest` returns YAML text; the manifest is written to a file only after UI approval, never by the agent. The updated manifest is never deployed by the agent. |
 
 These constraints make authority legible. An engineer inspecting the codebase can see exactly what the agent can and cannot do. Permissions can be audited, behavior is predictable under stress, and failure modes are bounded.
@@ -161,13 +174,13 @@ class AgentResponse(BaseModel):
     reasoning: str                     # narrative shown to the engineer
     has_irreversible_suggestion: bool  # determined post-hoc
     irreversible_reason: str | None    # one sentence explaining why
-    confidence: float                  # 0.0-1.0, derived from runbook availability
+    confidence: float                  # 0.0-1.0, derived from workflow step completeness
     manifest_yaml: str                 # extracted YAML if agent proposes a manifest
 ```
 
-**Confidence** is set based on whether runbook data was available (from `get_runbook_steps`), not from model output:
-- `0.8` if runbook data was available (any results returned)
-- `0.3` if no runbook data was found
+**Confidence** is set based on whether all mandatory diagnostic steps are complete (from `get_next_step().all_mandatory_complete`), not from model output:
+- `0.8` if all mandatory diagnostic steps are complete
+- `0.3` if mandatory steps remain incomplete
 
 When an irreversible action is suggested, the **UI prominently warns the engineer** with a red error banner showing the exact reason (e.g., "⚠️ Irreversible action detected: Suggestion involves: upgrade"). If the suggestion includes a manifest update, an approval gate with checkbox + "Approve" button is shown. For informational advisories without a manifest (e.g., upgrade decisions), a red warning is displayed - the engineer evaluates and acts independently.
 
@@ -212,37 +225,53 @@ These mechanisms close the loop between agent suggestions and real incident outc
 
 ### Habit 6 - Progress Through Structure
 
-Maturity in an agentic system doesn't mean more autonomy — it means more predictability. Every structural decision here moves complexity out of the prompt and into code.
+Maturity in an agentic system doesn't mean more autonomy, it means more predictability. Every structural decision here moves complexity out of the prompt and into code.
 
 | Principle | How it's implemented in this project |
 |---|---|
-| **Tools, not knowledge** | `get_runbook_steps(metric)` reads the runbook file directly by metric name via `RUNBOOK_MAP`. No similarity search, no embedding gamble. When a runbook is updated, the agent picks it up instantly — no reindex needed. Caveat: adding a new metric requires a manual `RUNBOOK_MAP` update in `alert_chatbot.py`. |
-| **State machine, not conversation state** | `DIAGNOSTIC_WORKFLOWS` defines the step sequence per metric in code (e.g. `p99_latency`: check health → check latency metrics → check pod resources → assess options → propose manifest). The agent calls `get_next_step(metric, completed_steps)` to find out what to do next. It never tracks where it is — the system does. State lives in tool arguments, not conversation history. |
-| **Strict interfaces** | `propose_manifest` accepts a `change_type` enum (`scale_replicas`, `config_update`, `env_update`, `resource_limits`, `rollback`), not free-form text. Every tool returns typed JSON with `irreversible` and `reason` fields. `AgentResponse` is a Pydantic model — downstream consumers (UI, audit log, escalation gate) depend on known field names, not narrative text. |
-| **Code beats model** | `_assess_irreversibility()` regex-scans for irreversible keywords (`upgrade`, `scale`, `restart`, `delete`, `rollback`) instead of asking the LLM to self-assess. A 5-line regex is perfectly reliable. |
-| **Boring failure modes** | When the model hallucinates over runbook data, post-processing replaces the response with the actual runbook content. `parse_agent_response()` has a three-layer fallback: try JSON → try `===ASSESSMENT===` delimiter → return graceful defaults. No creative lies, just predictable degradation. |
-| **Bounded reasoning and context** | `MAX_ITERATIONS=8` covers the full 5-tool chain with three buffer cycles. The primary path uses direct file reads, avoiding context-window risk entirely for the main diagnostic flow. |
-| **Compact prompt** | The system prompt is ~5 lines. All behavior lives in 5 tool functions with typed schemas. Logic moves out of the prompt and into code — which is the direction structure points. |
+| **Tools, not knowledge** | `get_runbook_steps(metric)` reads the runbook file directly by metric name via `RUNBOOK_MAP`. No similarity search, no embedding gamble. When a runbook is updated, the agent picks it up instantly, no reindex needed.  |
+| **State machine, not conversation state** | `DIAGNOSTIC_WORKFLOWS` defines the step sequence per metric in code (e.g. `p99_latency`: check health → check latency metrics → check pod resources → assess options → propose manifest). The agent calls `get_next_step(metric, completed_steps)` to find out what to do next. Returns `valid_next_steps` (constrained set, excludes escalation steps when mandatory diagnostics incomplete), `all_mandatory_complete`, and tracked `completed` steps. If the agent passes unknown step IDs (e.g. made-up section names), a `warning` field lists the ignored IDs. Agent picks from the list rather than following a fixed sequence. It never tracks where it is, the system does. State lives in tool arguments, not conversation history. |
+| **Strict interfaces** | `propose_manifest` accepts a `change_type` enum (`scale_replicas`, `config_update`, `env_update`, `resource_limits`, `rollback`), not free-form text. Every tool returns typed JSON with `irreversible` and `reason` fields. `AgentResponse` is a Pydantic model, downstream consumers (UI, audit log, escalation gate) depend on known field names, not narrative text. |
+| **Code beats model** | `_assess_irreversibility()` regex-scans for irreversible keywords (`upgrade`, `scale`, `restart`, `delete`, `rollback`) instead of asking the LLM to self-assess. |
+| **Boring failure modes** | If no runbook exists for the metric, `get_runbook_steps` returns a clear error reason and the UI shows a predefined "No runbook available" message instead of letting the agent hallucinate. No creative lies, just predictable degradation. |
+| **Bounded reasoning and context** | `MAX_ITERATIONS=12` covers the full diagnostic loop (runbook + 3 step iterations + assessment) with buffer cycles. The primary path uses direct file reads, avoiding context-window risk entirely for the main diagnostic flow. |
+| **Compact prompt** | The system prompt is ~5 lines. All behavior lives in 5 tool functions with typed schemas. Logic moves out of the prompt and into code, which is the direction structure points. |
 
 **Example 1: Direct Runbook Lookup via `get_runbook_steps`**
 
-A p99 latency alert fires at 520ms on the inference-api service. The agent calls `get_runbook_steps(metric="p99_latency")`. The `RUNBOOK_MAP` dictionary maps the metric name directly to `data/runbooks/high-latency.md`. Python's `Path.read_text()` reads every byte of the file. The runbook says: "Step 1: `curl -s http://inference-api:8000/metrics | grep inference_latency` — check if p99 exceeds 500ms." The agent reports the exact command. No chunking, no embedding, no similarity gamble. The runbook was edited 30 seconds ago — the agent picks it up instantly.
+A p99 latency alert fires at 520ms on the inference-api service. The agent calls `get_runbook_steps(metric="p99_latency")`. The `RUNBOOK_MAP` dictionary maps the metric name directly to `data/runbooks/high-latency.md`. Python's `Path.read_text()` reads every byte of the file. The runbook says: "Step 1: `curl -s http://inference-api:8000/metrics | grep inference_latency`, check if p99 exceeds 500ms." The agent reports the exact command. No chunking, no embedding, no similarity gamble. The runbook was edited 30 seconds ago, the agent picks it up instantly.
 
 **Example 2: Diagnostic State Machine via `get_next_step`**
 
-An engineer walks through p99 latency diagnosis and has checked the health endpoint. The agent calls `get_next_step(metric="p99_latency", completed_steps="Check inference API health")`. `DIAGNOSTIC_WORKFLOWS` defines the sequence in code: `["Check inference API health", "Check latency metrics endpoint", "Check pod resource usage", "Assess remediation options", "Propose manifest change if needed"]`. The system replies `{"next_step": "Check latency metrics endpoint"}`. The agent never decides what to do next — it asks the system. State lives in tool arguments, not conversation memory.
+An engineer walks through p99 latency diagnosis and has checked the health endpoint. The agent calls `get_next_step(metric="p99_latency", completed_steps="check_health_endpoint")`. `DIAGNOSTIC_WORKFLOWS` defines the sequence in code: `["check_health_endpoint", "check_latency_metrics", "check_pod_resources", "assess_options", "propose_manifest"]`. The system replies `{"valid_next_steps": ["check_latency_metrics", "check_pod_resources"], "mandatory_before_escalation": ["check_latency_metrics", "check_pod_resources"], "completed": ["check_health_endpoint"], "all_mandatory_complete": false}`. The agent picks from the list, it doesn't decide the sequence. Escalation steps (`assess_options`, `propose_manifest`) are excluded until all mandatory diagnostics complete. State lives in tool arguments, not conversation memory.
 
 ### Habit 7 - Visible Accountability
 
-If you can't explain why a decision was made, you don't own the system — you're just watching it. Logs alone are transcripts; accountability requires tracing *intent* not just *output*. Every structural decision here ensures the "why" trails the "what."
+If you can't explain why a decision was made, you don't own the system, you're just watching it. Logs alone are transcripts; accountability requires tracing *intent* not just *output*. Every structural decision here ensures the "why" trails the "what."
 
 | Principle | How it's implemented in this project |
 |---|---|
 | **Decision trace, not just logs** | Every agent run produces a `decision_trace` event recording `intent` (hardcoded from the alert metric URL param as `"diagnose_{metric}"`, not LLM-generated), `context_retrieved` (which runbook was looked up), `constraint_checks` (metric thresholds evaluated), `policies_applied` (all diagnostic workflow steps for the metric), and `tool_chain` (ordered list of tools actually called). This answers "why did the agent do that" without replaying the model. |
-| **Trace ID links cause to effect** | Each agent run generates one `trace_id` (UUID) shared by all `tool_call`, `decision_trace`, and `interaction` events. Filter events by `trace_id` to reconstruct the full causal chain — from user query through tool calls to final response. |
+| **Trace ID links cause to effect** | Each agent run generates one `trace_id` (UUID) shared by all `tool_call`, `decision_trace`, and `interaction` events. Filter events by `trace_id` to reconstruct the full causal chain, from user query through tool calls to final response. |
 | **Owner team on every tool** | Every tool is tagged with a human team in `TOOL_OWNERS`. If `propose_manifest` produces a bad YAML, the ticket routes to **Platform Team**, not "the AI team." This turns model failures into process improvement signals routed to the right team. |
-| **Require policy citations in responses** | The system prompt instructs the agent to cite runbook sections by name (e.g. "Per [Section: Diagnostic Steps]..."). The `cited_sections` field is derived deterministically from the diagnostic workflow state machine — each `get_next_step(metric, completed_steps)` call records which steps the agent completed. The step IDs are mapped to human-readable labels via `_derive_cited_sections()`. No text scanning, no heuristic matching, no model compliance risk. |
-| **Decision metadata on every action** | Every tool call carries a deterministic `reason_code` derived from the tool name and arguments — the LLM has nothing to do with it. `suggest_diagnostic_command(service="inference-api", symptom="latency")` → `reason_code="diagnostic_command_for_latency"`. `propose_manifest(service="inference-api", change_type="scale_replicas")` → `reason_code="propose_scale_replicas_change"`. `get_next_step(metric="p99_latency", completed_steps="")` → `reason_code="query_first_diagnostic_step"`. Generated in `_derive_reason_code()` at the telemetry wrapper layer, not by the model. Zero model compliance risk. |
+| **Require policy citations in responses** | The system prompt instructs the agent to cite runbook sections by name (e.g. "Per [Section: Diagnostic Steps]..."). The `cited_sections` field is derived deterministically from the diagnostic workflow definition, each `get_next_step(metric, completed_steps)` call records which steps the agent completed. The step IDs are mapped to human-readable labels via `_derive_cited_sections()`. No text scanning, no heuristic matching, no model compliance risk. |
+| **Decision metadata on every action** | Every tool call carries a deterministic `reason_code` derived from the tool name and arguments, the LLM has nothing to do with it. `suggest_diagnostic_command(service="inference-api", symptom="latency")` → `reason_code="diagnostic_command_for_latency"`. `propose_manifest(service="inference-api", change_type="scale_replicas")` → `reason_code="propose_scale_replicas_change"`. `get_next_step(metric="p99_latency", completed_steps="")` → `reason_code="query_first_diagnostic_step"`. Generated in `_derive_reason_code()` at the telemetry wrapper layer, not by the model. Zero model compliance risk. |
+
+---
+
+### Example: propose_manifest called with unsupported change_type
+
+**How it will not work:**
+
+Agent: "I cannot generate that manifest."
+
+**How it will work:**
+
+Agent: "Change type 'drain_node' is not supported per [allowed-manifest-changes.yaml]; accepted values: config_update, scale_replicas, env_update, resource_limits, rollback.
+
+Select a supported change_type or escalate to [Platform Team per tool-owners.yaml] if a new change type needs to be added."
+
+---
 
 The full event catalog:
 
@@ -293,26 +322,50 @@ Time: 2026-06-02T10:32:00Z
 
 **Engineer types:** *"Help me troubleshoot inference-api"*
 
-**Agent reasoning (visible in verbose log):**
+**Agent tool trace (verbose log):**
 ```
-Thought: The inference API has high p99 latency. Let me get the runbook for this metric.
-  Action: get_runbook_steps("p99_latency")
-  Observation: # Runbook: High Inference Latency ... (full file content)
+get_runbook_steps(metric="p99_latency")
+→ Runbook: High Inference Latency ... (full file content)
 
-Thought: I have the runbook. Let me check what step to do next.
-  Action: get_next_step("p99_latency", "")
-  Observation: {"next_step": "check_health_endpoint"}
+get_next_step(metric="p99_latency", completed_steps="")
+→ {"valid_next_steps": ["check_health_endpoint", "check_latency_metrics", "check_pod_resources"], "all_mandatory_complete": false}
 
-Thought: The next step is to check the health endpoint.
-  Action: suggest_diagnostic_command("inference-api", "health")
-  Observation: curl -s http://inference-api:8000/health
+suggest_diagnostic_command(service="inference-api", symptom="health")
+→ curl -s http://inference-api:8000/health
+
+get_next_step(metric="p99_latency", completed_steps="check_health_endpoint")
+→ {"valid_next_steps": ["check_latency_metrics", "check_pod_resources"], "all_mandatory_complete": false}
+
+suggest_diagnostic_command(service="inference-api", symptom="latency")
+→ curl -s http://inference-api:8000/metrics | grep inference_latency
+
+get_next_step(metric="p99_latency", completed_steps="check_health_endpoint,check_latency_metrics")
+→ {"valid_next_steps": ["check_pod_resources"], "all_mandatory_complete": false}
+
+suggest_diagnostic_command(service="inference-api", symptom="resources")
+→ kubectl top pods -l app=inference-api
+
+get_next_step(metric="p99_latency", completed_steps="check_health_endpoint,check_latency_metrics,check_pod_resources")
+→ {"valid_next_steps": [], "all_mandatory_complete": true}
 ```
 
-**Agent response:**
-curl -s http://inference-api:8000/health
-curl -s http://inference-api:8000/metrics | grep inference_latency
-kubectl top pods -l app=inference-api
+**What the engineer sees in the UI:**
 
-To troubleshoot, start with the diagnostic commands above. The runbook suggests checking health endpoint and latency metrics first.
+```
+✅ Suggestions - you must execute them manually
+
+# 1. Check inference API health
+  curl -s http://inference-api:8000/health
+# 2. Check current latency metrics
+  curl -s http://inference-api:8000/metrics | grep inference_latency
+# 3. Check in-flight requests
+  curl -s http://inference-api:8000/metrics | grep inference_requests_in_flight
+# 4. Check pod resource usage
+  kubectl top pods -l app=inference-api
+# 5. Check pod logs for errors
+  kubectl logs -l app=inference-api --tail=50
+# 6. Verify model is loaded correctly
+  kubectl exec deploy/inference-api -- curl -s http://localhost:8000/health
+```
 
 

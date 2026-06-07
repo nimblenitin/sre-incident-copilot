@@ -1,0 +1,8 @@
+# Tool ownership mapping for accountability.
+# Each tool is tagged with the team responsible for its output.
+tool_owners:
+  get_runbook_steps: SRE Runbook Team
+  get_next_step: SRE Runbook Team
+  suggest_diagnostic_command: SRE Engineering
+  assess_options: SRE Engineering
+  propose_manifest: Platform Team

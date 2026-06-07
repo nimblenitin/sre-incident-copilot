@@ -1,0 +1,19 @@
+# Allowed manifest change types for propose_manifest tool.
+# Each entry defines a change type, its description, and whether
+# it is irreversible (requires escalation gate in UI).
+change_types:
+  - name: config_update
+    description: Update a ConfigMap key-value pair
+    irreversible: true
+  - name: scale_replicas
+    description: Scale deployment replicas up or down
+    irreversible: true
+  - name: env_update
+    description: Set or update an environment variable on a deployment
+    irreversible: true
+  - name: resource_limits
+    description: Adjust CPU/memory resource requests and limits
+    irreversible: false
+  - name: rollback
+    description: Roll back a deployment to a previous revision
+    irreversible: true
