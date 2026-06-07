@@ -1,4 +1,4 @@
-<h1 align="left">SRE incident Co-Pilot <img src="assets/screenshot.png" width="300" align="right"></h1>
+<h1 align="left">SRE incident Co-Pilot <img src="assets/screenshot.png" width="220" align="right"></h1>
 
 When an alert fires, engineers usually start from scratch, finding the runbook, checking metrics, figuring out what to try first. This tool tries to shorten that gap.
 It includes a Streamlit agent chat interface that opens from the alert link, pre-loaded with context. It suggests runbook steps and diagnostic commands, and can propose K8s manifest changes.
